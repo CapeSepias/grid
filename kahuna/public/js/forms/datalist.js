@@ -25,10 +25,12 @@ datalist.directive('grDatalist', [function() {
                 selectedIndex = (selectedIndex + movement + ctrl.results.length) %
                                 ctrl.results.length;
 
+            ctrl.setIndex = key => selectedIndex = key;
+
             ctrl.isSelected = key => key === selectedIndex;
 
             ctrl.searchFor = q =>
-                ctrl.search({ q }).then(results => ctrl.results = results);
+                ctrl.search({ q }).then(results => ctrl.results = results).then(selectedIndex = 0);
 
             ctrl.setValueTo = value => ctrl.value = value;
 
@@ -52,8 +54,29 @@ datalist.directive('grDatalistInput',
     return {
         restrict: 'A',
         require:['^grDatalist', '?ngModel'],
+        link: function(scope, element, attrs, [parentCtrl, ngModel]) {
+            const valueSelectorFn = attrs.grDatalistInputSelector;
+            const valueUpdaterFn  = attrs.grDatalistInputUpdater;
+            const onCancel = attrs.grDatalistInputOnCancel;
 
-        link: function(scope, element, _/*attrs*/, [parentCtrl, ngModel]) {
+            function valueSelector(value) {
+                if (valueSelectorFn) {
+                    return scope.$eval(valueSelectorFn, {$value: value});
+                } else {
+                    return value;
+                }
+            }
+            function valueUpdater(currentValue, selectedValue) {
+                if (valueUpdaterFn) {
+                    return scope.$eval(valueUpdaterFn, {
+                        $currentValue: currentValue,
+                        $selectedValue: selectedValue
+                    });
+                } else {
+                    return selectedValue;
+                }
+            }
+
             // This feels like it should be set to this directive, but it is
             // needed in the template so we set it here.
             parentCtrl.active = false;
@@ -63,9 +86,22 @@ datalist.directive('grDatalistInput',
             const keyFuncs = {
                 up:    () => parentCtrl.moveIndex(-1),
                 down:  () => parentCtrl.moveIndex(+1),
-                enter: () => parentCtrl.setValueFromSelectedIndex(),
                 esc:   deactivate
             };
+
+            // Enter is on keydown to prevent the submit event being
+            // propagated up.
+            input.on('keydown', event => {
+                if (keys[event.which] === 'enter' && parentCtrl.active) {
+                    event.preventDefault();
+                    scope.$apply(parentCtrl.setValueFromSelectedIndex);
+                }
+                //to prevent the caret moving to the start/end of the input box
+                if (parentCtrl.active &&
+                    ( keys[event.which] === 'up' || keys[event.which] === 'down' ) ) {
+                    event.preventDefault();
+                }
+            });
 
             input.on('keyup', event => {
                 const func = keyFuncs[keys[event.which]];
@@ -73,12 +109,13 @@ datalist.directive('grDatalistInput',
                 if (func && parentCtrl.active) {
                     event.preventDefault();
                     scope.$apply(func);
-                } else {
+                } else if (keys[event.which] !== 'enter' && keys[event.which] !== 'esc') {
                     searchAndActivate();
+                } else if (keys[event.which] === 'esc' && !parentCtrl.active) {
+                    scope.$apply(onCancel);
                 }
             });
 
-            input.on('focus', searchAndActivate);
             input.on('click', searchAndActivate);
 
             // This is done to make the results disappear when you select
@@ -90,7 +127,8 @@ datalist.directive('grDatalistInput',
             input.on('blur', () => $timeout(deactivate, 150));
 
             scope.$watch(() => parentCtrl.value, onValChange(newVal => {
-                ngModel.$setViewValue(newVal, 'gr:datalist:update');
+                const updatedValue = valueUpdater(input.val(), newVal);
+                ngModel.$setViewValue(updatedValue, 'gr:datalist:update');
                 ngModel.$commitViewValue();
                 ngModel.$render();
 
@@ -98,14 +136,16 @@ datalist.directive('grDatalistInput',
             }));
 
             function searchAndActivate() {
-                parentCtrl.searchFor(input.val()).then(activate);
+                parentCtrl.searchFor(valueSelector(input.val())).then(activate);
             }
 
             function activate(results) {
-                const isOnlyResult = results.length === 1 && input.val() === results[0];
+                const inputMatchesFirstResult = valueSelector(input.val()) === results[0];
+                const isOnlyResult = results.length === 1 && inputMatchesFirstResult;
                 const noResults = results.length === 0 || isOnlyResult;
 
                 parentCtrl.active = !noResults;
+
             }
 
             function deactivate() {

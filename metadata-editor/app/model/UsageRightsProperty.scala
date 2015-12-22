@@ -15,7 +15,8 @@ case class UsageRightsProperty(
   required: Boolean,
   options: Option[List[String]] = None,
   optionsMap: Option[Map[String, List[String]]] = None,
-  optionsMapKey: Option[String] = None
+  optionsMapKey: Option[String] = None,
+  examples: Option[String] = None
 )
 
 
@@ -23,51 +24,81 @@ object UsageRightsProperty {
   type OptionsMap = Map[String, List[String]]
   type Options = List[String]
 
+  import MetadataConfig.{contractPhotographersMap, externalPhotographersMap, contractIllustrators, creativeCommonsLicense}
+  import UsageRightsConfig.freeSuppliers
+
   implicit val jsonWrites: Writes[UsageRightsProperty] = Json.writes[UsageRightsProperty]
 
-  def getPropertiesForCat(u: UsageRights): List[UsageRightsProperty] =
-    agencyProperties(u) ++ photographerProperties(u) ++ restrictionProperties(u)
+  def sortList(l: List[String]) = l.sortWith(_.toLowerCase < _.toLowerCase)
+
+  val props: List[(UsageRightsSpec) => List[UsageRightsProperty]] =
+    List(categoryUsageRightsProperties, restrictionProperties)
+
+  def getPropertiesForSpec(u: UsageRightsSpec): List[UsageRightsProperty] = props.flatMap(f => f(u))
+
+  private def requiredStringField(
+    name: String,
+    label: String,
+    options: Option[List[String]] = None,
+    examples: Option[String] = None,
+    optionsMap: Option[Map[String, List[String]]] = None,
+    optionsMapKey: Option[String] = None
+  ) = UsageRightsProperty(name, label, "string", required = true, options,
+                          optionsMap, optionsMapKey, examples)
 
   private def publicationField(required: Boolean)  =
     UsageRightsProperty("publication", "Publication", "string", required,
-      Some(MetadataConfig.staffPhotographersMap.keys.toList.sortWith(_.toLowerCase < _.toLowerCase)))
+      Some(sortList(externalPhotographersMap.keys.toList)))
 
-  private def photographerField =
-    UsageRightsProperty("photographer", "Photographer", "string", true)
+  private def photographerField(examples: String) =
+    requiredStringField("photographer", "Photographer", examples = Some(examples))
 
   private def photographerField(photographers: OptionsMap, key: String) =
-    UsageRightsProperty("photographer", "Photographer", "string", true, optionsMap = Some(photographers), optionsMapKey = Some(key))
+    requiredStringField("photographer", "Photographer",
+      optionsMap = Some(photographers), optionsMapKey = Some(key))
 
-  private def restrictionProperties(u: UsageRights): List[UsageRightsProperty] = u match {
-    case _:NoRights.type => List()
+  private def restrictionProperties(u: UsageRightsSpec): List[UsageRightsProperty] = u match {
+    case NoRights => List()
     case _ => List(UsageRightsProperty("restrictions", "Restrictions", "text", u.defaultCost.contains(Conditional)))
   }
 
-  private def agencyProperties(u: UsageRights): List[UsageRightsProperty] = u match {
-    case _:Agency => List(
-      UsageRightsProperty("supplier", "Supplier", "string", true, Some(UsageRightsConfig.freeSuppliers.sortWith(_.toLowerCase < _.toLowerCase))),
-      UsageRightsProperty("suppliersCollection", "Collection", "string", false)
+  def categoryUsageRightsProperties(u: UsageRightsSpec) = u match {
+    case Agency => List(
+      requiredStringField("supplier", "Supplier", Some(sortList(freeSuppliers))),
+      UsageRightsProperty(
+        "suppliersCollection", "Collection", "string", required = false,
+        examples = Some("AFP, FilmMagic, WireImage"))
     )
+    case CommissionedAgency => List(requiredStringField("supplier", "Supplier", examples = Some("Demotix")))
 
-    case _:CommissionedAgency => List(UsageRightsProperty("supplier", "Supplier", "string", true))
-    case _ => List()
-  }
-
-
-  private def photographerProperties(u: UsageRights): List[UsageRightsProperty] = u match {
-    case _:StaffPhotographer => List(
+    case StaffPhotographer => List(
       publicationField(true),
-      photographerField(MetadataConfig.staffPhotographersMap, "publication")
+      photographerField(externalPhotographersMap, "publication")
+    )
+    case ContractPhotographer => List(
+      publicationField(true),
+      photographerField(contractPhotographersMap, "publication")
+    )
+    case CommissionedPhotographer => List(
+      publicationField(false),
+      photographerField("Sophia Evans, Murdo Macleod")
     )
 
-    case _:CommissionedPhotographer => List(
-      publicationField(false),
-      photographerField
+    case ContractIllustrator => List(
+      requiredStringField("creator", "Illustrator", Some(sortList(contractIllustrators))))
+
+    case CommissionedIllustrator => List(
+      requiredStringField("creator", "Illustrator", examples = Some("Ellie Foreman Peck, Matt Bors")))
+
+    case CreativeCommons => List(
+      requiredStringField("licence", "Licence", Some(creativeCommonsLicense)),
+      requiredStringField("source", "Source", examples = Some("Wikimedia Commons")),
+      requiredStringField("creator", "Owner", examples = Some("User:Colin")),
+      requiredStringField("contentLink", "Link to content", examples = Some("https://commons.wikimedia.org/wiki/File:Foreign_and_Commonwealth_Office_-_Durbar_Court.jpg"))
     )
 
-    case _:ContractPhotographer => List(
-      publicationField(false),
-      photographerField
+    case Composite => List(
+      requiredStringField("suppliers", "Suppliers", examples = Some("REX/Getty Images/Corbis, Corbis/Reuters"))
     )
 
     case _ => List()

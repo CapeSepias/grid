@@ -35,7 +35,17 @@ var config = {
     assetsRoot: assetsRootLink && assetsRootLink.getAttribute('href'),
 
     // Static config
-    'pandular.reAuthUri': '/login'
+    'pandular.reAuthUri': '/login',
+
+    vndMimeTypes: new Map([
+        ['gridImageData',  'application/vnd.mediaservice.image+json'],
+        ['gridImagesData', 'application/vnd.mediaservice.images+json'],
+        ['kahunaUri',      'application/vnd.mediaservice.kahuna.uri'],
+        // These two are internal hacks to help us identify when we're dragging internal assets
+        // They should definitely not be relied on externally.
+        ['isGridLink',     'application/vnd.mediaservice.kahuna.link'],
+        ['isGridImage' ,   'application/vnd.mediaservice.kahuna.image']
+    ])
 };
 
 var kahuna = angular.module('kahuna', [
@@ -125,7 +135,7 @@ kahuna.run(['$log', '$rootScope', 'mediaApi', function($log, $rootScope, mediaAp
                     authAndRedirect(loginUriTemplate);
                 } else {
                     // Couldn't extract a login URI, die noisily
-                    throw error;
+                    throw new Error('Failed to redirect to auth, no login URI found');
                 }
             }
         });
@@ -151,16 +161,39 @@ kahuna.run(['$rootScope', 'mediaApi',
 
 // Intercept 401s and emit an event
 kahuna.config(['$httpProvider', function($httpProvider) {
-    $httpProvider.interceptors.push('httpUnauthorisedInterceptor');
+    $httpProvider.interceptors.push('httpErrorInterceptor');
 }]);
 
-kahuna.factory('httpUnauthorisedInterceptor',
+kahuna.factory('httpErrorInterceptor',
                ['$q', '$rootScope', 'httpErrors',
                 function($q, $rootScope, httpErrors) {
     return {
         responseError: function(response) {
-            if (response.status === httpErrors.unauthorised.errorCode) {
-                $rootScope.$emit('events:error:unauthorised');
+            switch (response.status) {
+                case 0: {
+                    /*
+                    Status is 0 when the headers of the response does not
+                    include the correct cors. This happens when the request
+                    fails and we don't explicitly return an error code.
+                     */
+                    $rootScope.$emit('events:error:unknown');
+                    break;
+                }
+                case httpErrors.unauthorised.errorCode: {
+                    $rootScope.$emit('events:error:unauthorised');
+                    break;
+                }
+                case httpErrors.internalServerError.errorCode: {
+                    $rootScope.$emit('events:error:server');
+                    break;
+                }
+                case httpErrors.internalServerError.serviceUnavailableError: {
+                    $rootScope.$emit('events:error:server');
+                    break;
+                }
+                default: {
+                    break;
+                }
             }
             return $q.reject(response);
         }
@@ -173,6 +206,8 @@ kahuna.run(['$rootScope', 'globalErrors',
 
     $rootScope.$on('events:error:unauthorised', () => globalErrors.trigger('unauthorised'));
     $rootScope.$on('pandular:re-establishment:fail', () => globalErrors.trigger('authFailed'));
+    $rootScope.$on('events:error:server', () => globalErrors.trigger('server'));
+    $rootScope.$on('events:error:unknown', () => globalErrors.trigger('unknown'));
 }]);
 
 // tracking errors
@@ -266,7 +301,7 @@ kahuna.filter('getExtremeAssets', function() {
 });
 
 // Take an image and return a drag data map of mime-type -> value
-kahuna.filter('asImageDragData', function() {
+kahuna.filter('asImageDragData', ['vndMimeTypes', function(vndMimeTypes) {
     // Annoyingly cannot use Resource#getLink because it returns a
     // Promise and Angular filters are synchronous :-(
     function syncGetLinkUri(resource, rel) {
@@ -276,19 +311,20 @@ kahuna.filter('asImageDragData', function() {
     }
 
     return function(image) {
-        var url = image && image.uri;
-
-        if (url) {
+        var uri = image && image.uri;
+        if (uri) {
             const kahunaUri = syncGetLinkUri(image, 'ui:image');
+            // Resources don't serialise well yet..
+            const imageObj = { data: image.data, uri };
             return {
-                'application/vnd.mediaservice.image+json': JSON.stringify({ data: image.data }),
-                'application/vnd.mediaservice.kahuna.uri': kahunaUri,
-                'text/plain':    url,
-                'text/uri-list': url
+                [vndMimeTypes.get('gridImageData')]: JSON.stringify(imageObj),
+                [vndMimeTypes.get('kahunaUri')]: kahunaUri,
+                'text/plain':    uri,
+                'text/uri-list': uri
             };
         }
     };
-});
+}]);
 
 // Take an image and return a drag data map of mime-type -> value
 kahuna.filter('asCropsDragData', function() {
@@ -348,6 +384,13 @@ kahuna.filter('assetFile', function() {
 
 kahuna.filter('stripEmailDomain', function() {
     return str => str.replace(/@.+/, '');
+});
+
+kahuna.filter('getInitials', function() {
+    return str => str && str.replace(/@.+/, '')
+        .split('.')
+        .map(e => e.charAt(0).toUpperCase())
+        .join('');
 });
 
 kahuna.filter('spaceWords', function() {
@@ -449,6 +492,28 @@ kahuna.directive('uiLocalstore', ['$window', function($window) {
     };
 }]);
 
+// These two are internal hacks to help us identify when we're dragging internal assets
+// They should definitely not be relied on externally.
+kahuna.directive('img', ['vndMimeTypes', function(vndMimeTypes) {
+    return {
+        restrict: 'E',
+        link: function(scope, element) {
+            element.bind('dragstart', event => {
+                event.originalEvent.dataTransfer.setData(vndMimeTypes.get('isGridLink'), 'true');
+            });
+        }
+    };
+}]);
+kahuna.directive('a', ['vndMimeTypes', function(vndMimeTypes) {
+    return {
+        restrict: 'E',
+        link: function(scope, element) {
+            element.bind('dragstart', event => {
+                event.originalEvent.dataTransfer.setData(vndMimeTypes.get('isGridImage'), 'true');
+            });
+        }
+    };
+}]);
 
 kahuna.directive('uiWindowResized', ['$window', function ($window) {
     return {

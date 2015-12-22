@@ -1,0 +1,8 @@
+gr-image-persist-status {
+    display: block;
+}
+
+gr-image-persist-status ui-archiver {
+    display: inline-block;
+    height: inherit;
+}

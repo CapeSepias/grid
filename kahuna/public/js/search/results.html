@@ -5,68 +5,118 @@
 </div>
 
 <div ng:if="! ctrl.loading"
-    ng:class="{'results--left': ctrl.inSelectionMode()}">
+    ng:class="{'results--left': ctrl.inSelectionMode}">
     <div ng:if="ctrl.totalResults == 0"
          class="image-no-results">
         No matches, sorry!
     </div>
 
     <div ng:if="ctrl.totalResults > 0">
-
         <div class="results-toolbar"
-            ng:class="{'results-toolbar--selection-mode': ctrl.metadataPanelAvailable}">
+             ng:class="{'results-toolbar--selection-mode': ctrl.metadataPanelAvailable}">
 
-	        <div class="results-toolbar-item image-results-count results-toolbar-item--static results-toolbar-item--left results-toolbar-item--split">
-                <div class="results-count">
-                    {{ctrl.totalResults | toLocaleString}} matches
-                    <button ng:show="ctrl.newImagesCount > 0"
-                            ng:click="ctrl.revealNewImages()"
-                            class="image-results-count__new">
-                        {{ctrl.newImagesCount | toLocaleString}} new
-                    </button>
-                </div>
+            <button class="results-toolbar-item results-toolbar-item--left clickable"
+                 id="toggle-collections-button"
+                 ng:click="ctrl.toggleCollectionsPanel()">
+                <gr-icon-label ng:if="!ctrl.collectionsPanelVisible"
+                               class="inner-clickable"
+                               gr-icon="folder">Show collections
+                </gr-icon-label>
+                <gr-icon-label ng:if="ctrl.collectionsPanelVisible"
+                               class="inner-clickable"
+                               gr-icon="folder">Hide collections
+                </gr-icon-label>
+            </button>
+
+            <div class="results-toolbar-item results-toolbar-item--static
+                        image-results-count">
+                {{ctrl.totalResults | toLocaleString}} matches
+                <button ng:show="ctrl.newImagesCount > 0"
+                        ng:click="ctrl.revealNewImages()"
+                        class="image-results-count__new"
+                        title="{{ctrl.newImagesCount}} new images as of {{ctrl.lastestTimeMoment}}">
+                    {{ctrl.newImagesCount | toLocaleString}} new
+                </button>
             </div>
 
-            <div class="action-bar" ng:if="ctrl.inSelectionMode()">
-                <div class="results-toolbar-item results-toolbar-item--right results-toolbar-item--static">
-                    {{ctrl.selectedImages.size}} selected
+            <div class="results-toolbar-item results-toolbar-item--static results-toolbar-item--left
+                        results__related-labels related-labels flex-container text-small"
+                        ng:class="{'related-labels--with-labels': ctrl.relatedLabels.length !== 0}">
+                <div class="related-labels__title">
+                    Related to
+                    <span ng:switch="ctrl.relatedLabels.length === 0">
+                        <form class="inline-block" ng:switch-when="true" ng:submit="ctrl.setParentLabel()">
+                            <gr-datalist
+                                    class="related-labels__datalist"
+                                gr:search="ctrl.suggestedLabelSearch(q)">
+                                <!-- TODO: autogrow this element -->
+                                <input class="related-labels__parent" type="text"
+                                       placeholder="e.g. observer"
+                                       ng:model="ctrl.parentLabel"
+                                       ng:model-options="{ updateOn: 'gr:datalist:update' }"
+                                       ng:change="ctrl.setParentLabel()"
+                                       gr:datalist-input />
+                            </gr-datalist>
+                        </form>
+                        <span ng:switch-default>{{ctrl.parentLabel}}:</span>
+                    </span>
+                </div>
+                <ul class="flex-container related-labels__labels">
+                    <li class="related-labels__label" ng:repeat="relatedLabel in ctrl.relatedLabels">
+                        <div ng:switch="relatedLabel.selected">
+                            <button class="related-labels__label-text related-labels__label-text--selected"
+                                    ng:switch-when="true"
+                                    ng:click="ctrl.removeSuggestedLabel(relatedLabel)"
+                                    gr:track-click="Related label remove"
+                                    gr:track-click-data="{'Label': relatedLabel.name}">
+                                    {{relatedLabel.name}}
+                            </button>
+                            <button class="related-labels__label-text"
+                                    ng:switch-when="false"
+                                    ng:click="ctrl.switchSuggestedLabelTo(relatedLabel)"
+                                    gr:track-click="Related label select"
+                                    gr:track-click-data="{'Label': relatedLabel.name}">
+                                    {{relatedLabel.name}}
+                            </button>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="results-toolbar__right flex-container">
+                <div class="results-toolbar-item results-toolbar-item--right results-toolbar-item--static"
+                     ng:if="ctrl.selectionCount > 0">
+                    {{ctrl.selectionCount}} selected
                 </div>
 
-                <a class="results-toolbar-item results-toolbar-item--right results-toolbar-item__clear-selection"
-			        ng:click="ctrl.clearSelection()">
-
-                    <span class="results-toolbar-item--icon">
-                        <gr-icon>clear</gr-icon>
-                    </span>
-                    <span class="results-toolbar-item--text">Clear selection</span>
+                <a class="results-toolbar-item results-toolbar-item--right"
+                   ng:click="ctrl.clearSelection()"
+                   ng:if="ctrl.selectionCount > 0">
+                    <gr-icon-label gr-icon="clear">Clear selection</gr-icon-label>
                 </a>
 
                 <gr-downloader class="results-toolbar-item results-toolbar-item--right"
-                    gr:images="ctrl.selectedImages"></gr-downloader>
+                    gr:images="ctrl.selectedImages"
+                    ng:if="ctrl.selectionCount > 0"></gr-downloader>
+
+                <gr-delete-image class="results-toolbar-item results-toolbar-item--right"
+                                 images="ctrl.selectedImages"
+                                 ng:if="ctrl.selectionIsDeletable && ctrl.selectionCount > 0">
+                </gr-delete-image>
 
                 <a class="results-toolbar-item results-toolbar-item--right results-toolbar-item__metadata-panel-controls"
                     ng:class="{'results-toolbar-item--disabled': !ctrl.metadataPanelAvailable, 'results-toolbar-item--active': ctrl.metadataPanelVisible}"
                     ng:mouseover="ctrl.showMetadataPanelMouseOver()"
                     ng:mouseleave="ctrl.showMetadataPanelMouseLeave()"
                     ng:click="ctrl.toggleLockMetadataPanel()">
-
                     <span ng:if="ctrl.metadataPanelVisible && !ctrl.metadataPanelLocked">
-                        <span class="results-toolbar-item--text">Lock meta panel</span>
-                        <span class="results-toolbar-item--icon">
-                            <gr-icon>lock_open</gr-icon>
-                        </span>
+                        <gr-icon-label gr-icon="lock_open">Lock info panel</gr-icon-label>
                     </span>
                     <span ng:if="ctrl.metadataPanelVisible && ctrl.metadataPanelLocked">
-                        <span class="results-toolbar-item--text">Unlock meta panel</span>
-                        <span class="results-toolbar-item--icon">
-                            <gr-icon>lock</gr-icon>
-                        </span>
+                        <gr-icon-label gr-icon="lock">Unlock info panel</gr-icon-label>
                     </span>
                     <span ng:if="!ctrl.metadataPanelVisible">
-                        <span class="results-toolbar-item--text">Show meta panel</span>
-                        <span class="results-toolbar-item--icon">
-                            <gr-icon>chrome_reader_mode</gr-icon>
-                        </span>
+                        <gr-icon-label gr-icon="chrome_reader_mode">Show info panel</gr-icon-label>
                     </span>
                 </a>
             </div>
@@ -80,13 +130,12 @@
             gu:lazy-table-preloaded-rows="4"
             gu:lazy-table-load-range="ctrl.loadRange($start, $end)">
 
-            <li
-                ng:repeat="image in ctrl.images track by image.data.id"
+            <li ng:repeat="image in ctrl.images track by image.data.id"
                 gu:lazy-table-cell="image">
 
                 <div class="result"
                      ng:class="{ 'result--seen': ctrl.imageHasBeenSeen(image),
-                               'result--selected': ctrl.imageHasBeenSelected(image)}">
+                                 'result--selected': ctrl.imageHasBeenSelected(image)}">
 
                     <!-- <HACK> -->
                     <!-- We don't want to add a property on `image` to determine the state of the checkbox, so render two individual inputs. -->
@@ -97,17 +146,19 @@
                                class="result__select__checkbox"
                                id="id-{{::image.data.id}}-result__select__checkbox--select"
                                checked="true"
-                               ng:click="ctrl.toggleSelection(image, false)"/>
+                               ng:click="ctrl.deselect(image)"/>
                         <label for="id-{{::image.data.id}}-result__select__checkbox--select"
                                class="result__select__checkbox__label">
                             <gr-icon>check_box</gr-icon>
                         </label>
                     </div>
-                    <div class="result__select" ng:if="!ctrl.imageHasBeenSelected(image)">
+                    <div class="result__select"
+                         ng:if="!ctrl.imageHasBeenSelected(image)"
+                         ng:class="{ 'result__select--no-pointer-events': ctrl.inSelectionMode}">
                         <input type="checkbox"
                                class="result__select__checkbox"
                                id="id-{{::image.data.id}}-result__select__checkbox--deselect"
-                               ng:click="ctrl.toggleSelection(image, true)" />
+                               ng:click="ctrl.select(image)" />
                         <label for="id-{{::image.data.id}}-result__select__checkbox--deselect"
                                class="result__select__checkbox__label">
                             <gr-icon>check_box</gr-icon>
@@ -115,8 +166,8 @@
                     </div>
 
                     <ui-preview-image image="image"
-                                      selection-mode="ctrl.inSelectionMode()"
-                                      ng:class="{'preview__quick-select': ctrl.inSelectionMode()}"
+                                      selection-mode="ctrl.inSelectionMode"
+                                      ng:class="{'preview__quick-select': ctrl.inSelectionMode}"
                                       ng:click="ctrl.onImageClick(image, $event)">
                         <button class="mark-as-seen image-action"
                                 title="Mark all images until this point as seen"

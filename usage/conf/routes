@@ -1,0 +1,12 @@
+GET     /                                               controllers.UsageApi.index
+
+GET     /usages/:id                                     controllers.UsageApi.forUsage(id: String)
+GET     /usages/media/:mediaId                          controllers.UsageApi.forMedia(mediaId: String)
+POST    /usages/print                                   controllers.UsageApi.setPrintUsages
+
+# Management
+GET     /management/healthcheck                         com.gu.mediaservice.lib.management.Management.healthCheck
+GET     /management/manifest                            com.gu.mediaservice.lib.management.Management.manifest
+
+# Shoo robots away
+GET     /robots.txt                                     controllers.Robots.disallowAll

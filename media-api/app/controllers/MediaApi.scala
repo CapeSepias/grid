@@ -4,6 +4,7 @@ import java.net.URI
 
 import com.gu.mediaservice.lib.config.MetadataConfig
 import play.api.mvc.Security.AuthenticatedRequest
+import play.utils.UriEncoding
 
 import scala.concurrent.Future
 import scala.util.Try
@@ -16,11 +17,15 @@ import org.joda.time.DateTime
 import uritemplate._
 import Syntax._
 
+import scalaz.{Validation, ValidationNel}
 import scalaz.syntax.std.list._
+import scalaz.syntax.validation._
+import scalaz.syntax.applicative._
+
 
 import lib.elasticsearch._
 import lib.{Notifications, Config, ImageResponse}
-import lib.querysyntax.{Condition, Parser}
+import lib.querysyntax._
 
 import com.gu.mediaservice.lib.auth
 import com.gu.mediaservice.lib.auth._
@@ -30,28 +35,27 @@ import com.gu.mediaservice.lib.formatting.{printDateTime, parseDateFromQuery}
 import com.gu.mediaservice.lib.cleanup.{SupplierProcessors, MetadataCleaners}
 import com.gu.mediaservice.lib.metadata.ImageMetadataConverter
 import com.gu.mediaservice.model._
-import com.gu.mediaservice.api.Transformers
-
 
 
 object MediaApi extends Controller with ArgoHelpers {
 
-  val keyStore = new KeyStore(Config.keyStoreBucket, Config.awsCredentials)
-  val permissionStore = new PermissionStore(Config.configBucket, Config.awsCredentials)
+  import Config.{rootUri, cropperUri, loaderUri, metadataUri, authUri, loginUriTemplate, collectionsUri}
 
-  val commonTransformers = new Transformers(Config.services)
-
-  import Config.{rootUri, cropperUri, loaderUri, metadataUri, authUri, loginUriTemplate}
-
-  val Authenticated = auth.Authenticated(keyStore, loginUriTemplate, Config.kahunaUri)
-
+  val Authenticated = Authed.action
+  val permissionStore = Authed.permissionStore
 
   val searchParamList = List("q", "ids", "offset", "length", "orderBy",
     "since", "until", "modifiedSince", "modifiedUntil", "takenSince", "takenUntil",
     "uploadedBy", "archived", "valid", "free",
-    "hasExports", "hasIdentifier", "missingIdentifier", "hasMetadata").mkString(",")
+    "hasExports", "hasIdentifier", "missingIdentifier", "hasMetadata",
+    "persisted").mkString(",")
 
   val searchLinkHref = s"$rootUri/images{?$searchParamList}"
+
+  private val suggestedLabelsLink =
+    Link("suggested-labels", s"$rootUri/suggest/edits/labels{?q}")
+
+  private val searchLink = Link("search", searchLinkHref)
 
   val indexResponse = {
     val indexData = Json.obj(
@@ -62,16 +66,19 @@ object MediaApi extends Controller with ArgoHelpers {
       // ^ Flatten None away
     )
     val indexLinks = List(
-      Link("search",          searchLinkHref),
+      searchLink,
       Link("image",           s"$rootUri/images/{id}"),
       // FIXME: credit is the only field availble for now as it's the only on
       // that we are indexing as a completion suggestion
       Link("metadata-search", s"$rootUri/suggest/metadata/{field}{?q}"),
+      Link("label-search",    s"$rootUri/images/edits/label{?q}"),
       Link("cropper",         cropperUri),
       Link("loader",          loaderUri),
       Link("edits",           metadataUri),
       Link("session",         s"$authUri/session"),
-      Link("witness-report",  s"https://n0ticeapis.com/2/report/{id}")
+      Link("witness-report",  s"https://n0ticeapis.com/2/report/{id}"),
+      Link("collections",     collectionsUri),
+      suggestedLabelsLink
     )
     respond(indexData, indexLinks)
   }
@@ -109,7 +116,6 @@ object MediaApi extends Controller with ArgoHelpers {
     isUploaderOrHasPermission(request, source, PermissionType.DeleteImage)
   }
 
-
   def getImage(id: String) = Authenticated.async { request =>
     val include = getIncludedFromParams(request)
 
@@ -120,7 +126,8 @@ object MediaApi extends Controller with ArgoHelpers {
 
         Future.sequence(List(withWritePermission, withDeletePermission)).map {
           case List(writePermission, deletePermission) =>
-            val (imageData, imageLinks, imageActions) = ImageResponse.create(id, source, writePermission, deletePermission, include)
+            val (imageData, imageLinks, imageActions) =
+              ImageResponse.create(id, source, writePermission, deletePermission, include)
             respond(imageData, imageLinks, imageActions)
         }
       }
@@ -143,14 +150,16 @@ object MediaApi extends Controller with ArgoHelpers {
 
   val ImageCannotBeDeleted = respondError(MethodNotAllowed, "cannot-delete", "Cannot delete persisted images")
   val ImageDeleteForbidden = respondError(Forbidden, "delete-not-allowed", "No permission to delete this image")
+  val ImageEditForbidden   = respondError(Forbidden, "edit-not-allowed", "No permission to edit this image")
 
   def deleteImage(id: String) = Authenticated.async { request =>
     ElasticSearch.getImageById(id) flatMap {
       case Some(source) =>
         val image = source.as[Image]
 
-        val isPersisted = ImageResponse.imageIsPersisted(image)
-        if (isPersisted) {
+        val hasExports = ImageResponse.imagePersistenceReasons(image).contains("exports")
+
+        if (hasExports) {
           Future.successful(ImageCannotBeDeleted)
         } else {
           canUserDeleteImage(request, source) map { canDelete =>
@@ -167,38 +176,46 @@ object MediaApi extends Controller with ArgoHelpers {
     }
   }
 
-  def cleanImage(id: String) = Authenticated.async {
 
-    val metadataCleaners = new MetadataCleaners(MetadataConfig.allPhotographersMap)
+  val metadataCleaners = new MetadataCleaners(MetadataConfig.allPhotographersMap)
 
-    ElasticSearch.getImageById(id) map {
+  def reindexImage(id: String) = Authenticated.async { request =>
+    ElasticSearch.getImageById(id) flatMap {
       case Some(source) => {
-        val image = source.as[Image]
+        // TODO: apply rights to edits API too
+        // TODO: helper to abstract boilerplate
+        canUserWriteMetadata(request, source) map { canWrite =>
+          if (canWrite) {
+            val image = source.as[Image]
 
-        val imageMetadata = ImageMetadataConverter.fromFileMetadata(image.fileMetadata)
-        val cleanMetadata = metadataCleaners.clean(imageMetadata)
-        val imageCleanMetadata = image.copy(metadata = cleanMetadata, originalMetadata = cleanMetadata)
-        val processedImage = SupplierProcessors.process(imageCleanMetadata)
+            val imageMetadata = ImageMetadataConverter.fromFileMetadata(image.fileMetadata)
+            val cleanMetadata = metadataCleaners.clean(imageMetadata)
+            val imageCleanMetadata = image.copy(metadata = cleanMetadata, originalMetadata = cleanMetadata)
+            val processedImage = SupplierProcessors.process(imageCleanMetadata)
 
-        // FIXME: dirty hack to sync the originalUsageRights and originalMetadata as well
-        val finalImage = processedImage.copy(
-          originalMetadata    = processedImage.metadata,
-          originalUsageRights = processedImage.usageRights
-        )
+            // FIXME: dirty hack to sync the originalUsageRights and originalMetadata as well
+            val finalImage = processedImage.copy(
+              originalMetadata    = processedImage.metadata,
+              originalUsageRights = processedImage.usageRights
+            )
 
-        val notification = Json.toJson(finalImage)
-        Notifications.publish(notification, "update-image")
+            val notification = Json.toJson(finalImage)
+            Notifications.publish(notification, "update-image")
 
-        Ok(Json.obj(
-          "id" -> id,
-          "changed" -> JsBoolean(image != finalImage),
-          "data" -> Json.obj(
-            "oldImage" -> image,
-            "updatedImage" -> finalImage
-          )
-        ))
+            Ok(Json.obj(
+              "id" -> id,
+              "changed" -> JsBoolean(image != finalImage),
+              "data" -> Json.obj(
+                "oldImage" -> image,
+                "updatedImage" -> finalImage
+              )
+            ))
+          } else {
+            ImageEditForbidden
+          }
+        }
       }
-      case None => NotFound.as(ArgoMediaType)
+      case None => Future.successful(ImageNotFound)
     }
   }
 
@@ -212,21 +229,33 @@ object MediaApi extends Controller with ArgoHelpers {
 
       Future.sequence(List(withWritePermission, withDeletePermission)).map {
         case List(writePermission, deletePermission) =>
-          val (imageData, imageLinks, imageActions) = ImageResponse.create(elasticId, source, writePermission, deletePermission, include)
+          val (imageData, imageLinks, imageActions) =
+            ImageResponse.create(elasticId, source, writePermission, deletePermission, include)
           val id = (imageData \ "id").as[String]
           val imageUri = URI.create(s"$rootUri/images/$id")
           EmbeddedEntity(uri = imageUri, data = Some(imageData), imageLinks, imageActions)
       }
     }
 
-    val searchParams = SearchParams(request)
-    for {
+    def respondSuccess(searchParams: SearchParams) = for {
       SearchResults(hits, totalCount) <- ElasticSearch.search(searchParams)
       imageEntities <- Future.sequence(hits map (hitToImageEntity _).tupled)
       prevLink = getPrevLink(searchParams)
       nextLink = getNextLink(searchParams, totalCount)
-      links = List(prevLink, nextLink).flatten
+      relatedLabelsLink = getRelatedLabelsLink(searchParams)
+      links = suggestedLabelsLink :: List(prevLink, nextLink, relatedLabelsLink).flatten
     } yield respondCollection(imageEntities, Some(searchParams.offset), Some(totalCount), links)
+
+    val searchParams = SearchParams(request)
+
+    SearchParams.validate(searchParams).fold(
+      // TODO: respondErrorCollection?
+      errors => Future.successful(respondError(UnprocessableEntity, InvalidUriParams.errorKey,
+        // Annoyingly `NonEmptyList` and `IList` don't have `mkString`
+        errors.map(_.message).list.reduce(_+ ", " +_), List(searchLink))
+      ),
+      params => respondSuccess(params)
+    )
   }
 
   val searchTemplate = URITemplate(searchLinkHref)
@@ -269,25 +298,35 @@ object MediaApi extends Controller with ArgoHelpers {
     }
   }
 
-  def suggestMetadataCredit(q: Option[String], size: Option[Int]) = Authenticated.async { request =>
-    ElasticSearch
-      .completionSuggestion("suggestMetadataCredit", q.getOrElse(""), size.getOrElse(10))
-      .map(c => respondCollection(c.results))
-  }
+  private def getRelatedLabelsLink(searchParams: SearchParams) = {
+    // We search if we have a label in the search, take the first one and then look up it's
+    // siblings so that we can return them as "related labels"
+    val labels = searchParams.structuredQuery.flatMap {
+      // TODO: Use ImageFields for guard
+      case Match(field: SingleField, value:Words) if field.name == "userMetadata.labels" => Some(value.string)
+      case Match(field: SingleField, value:Phrase) if field.name == "userMetadata.labels" => Some(value.string)
+      case _ => None
+    }
 
-  // TODO: work with analysed fields
-  // TODO: recover with HTTP error if invalid field
-  def metadataSearch(field: String, q: Option[String]) = Authenticated.async { request =>
-    ElasticSearch.metadataSearch(AggregateSearchParams(field, q)) map aggregateResponse
-  }
+    val (mainLabel, selectedLabels) = labels match {
+      case Nil => (None, Nil)
+      case label :: Nil => (Some(label), Nil)
+      case label :: extraLabels => (Some(label), extraLabels)
+    }
 
-  def editsSearch(field: String, q: Option[String]) = Authenticated.async { request =>
-    ElasticSearch.editsSearch(AggregateSearchParams(field, q)) map aggregateResponse
+    mainLabel.map { label =>
+      // FIXME: This is to stop a search for plain `"` breaking the whole lot.
+      val encodedLabel = UriEncoding.encodePathSegment(label, "UTF-8")
+      val uriTemplate = URITemplate(s"$rootUri/suggest/edits/labels/${encodedLabel}/sibling-labels{?selectedLabels,q}")
+      val paramMap = Map(
+        "selectedLabels" -> Some(selectedLabels.mkString(",")).filter(_.trim.nonEmpty),
+        "q" -> searchParams.query
+      )
+      val paramVars = paramMap.map { case (key, value) => key := value }.toSeq
+      val uri = uriTemplate expand (paramVars: _*)
+      Link("related-labels", uri)
+    }
   }
-
-  // TODO: Add some useful links
-  def aggregateResponse(agg: AggregateSearchResults) =
-    respondCollection(agg.results, Some(0), Some(agg.total))
 }
 
 
@@ -312,13 +351,23 @@ case class SearchParams(
   free: Option[Boolean],
   uploadedBy: Option[String],
   labels: List[String],
-  hasMetadata: List[String]
+  hasMetadata: List[String],
+  persisted: Option[Boolean]
 )
+
+case class InvalidUriParams(message: String) extends Throwable
+object InvalidUriParams {
+  val errorKey = "invalid-uri-parameters"
+}
 
 object SearchParams {
 
   def commasToList(s: String): List[String] = s.trim.split(',').toList
   def listToCommas(list: List[String]): Option[String] = list.toNel.map(_.list.mkString(","))
+
+  // TODO: return descriptive 400 error if invalid
+  def parseIntFromQuery(s: String): Option[Int] = Try(s.toInt).toOption
+  def parseBooleanFromQuery(s: String): Option[Boolean] = Try(s.toBoolean).toOption
 
   def apply(request: Request[Any]): SearchParams = {
 
@@ -331,24 +380,25 @@ object SearchParams {
       query,
       structuredQuery,
       request.getQueryString("ids").map(_.split(",").toList),
-      request.getQueryString("offset") flatMap (s => Try(s.toInt).toOption) getOrElse 0,
-      request.getQueryString("length") flatMap (s => Try(s.toInt).toOption) getOrElse 10,
-      request.getQueryString("orderBy") orElse request.getQueryString("sortBy"),
+      request.getQueryString("offset") flatMap parseIntFromQuery getOrElse 0,
+      request.getQueryString("length") flatMap parseIntFromQuery getOrElse 10,
+      request.getQueryString("orderBy"),
       request.getQueryString("since") flatMap parseDateFromQuery,
       request.getQueryString("until") flatMap parseDateFromQuery,
       request.getQueryString("modifiedSince") flatMap parseDateFromQuery,
       request.getQueryString("modifiedUntil") flatMap parseDateFromQuery,
       request.getQueryString("takenSince") flatMap parseDateFromQuery,
       request.getQueryString("takenUntil") flatMap parseDateFromQuery,
-      request.getQueryString("archived").map(_.toBoolean),
-      request.getQueryString("hasExports").map(_.toBoolean),
+      request.getQueryString("archived") flatMap parseBooleanFromQuery,
+      request.getQueryString("hasExports") flatMap parseBooleanFromQuery,
       request.getQueryString("hasIdentifier"),
       request.getQueryString("missingIdentifier"),
-      request.getQueryString("valid").map(_.toBoolean),
-      request.getQueryString("free").map(_.toBoolean),
+      request.getQueryString("valid") flatMap parseBooleanFromQuery,
+      request.getQueryString("free") flatMap parseBooleanFromQuery,
       request.getQueryString("uploadedBy"),
       commaSep("labels"),
-      commaSep("hasMetadata")
+      commaSep("hasMetadata"),
+      request.getQueryString("persisted") flatMap parseBooleanFromQuery
     )
   }
 
@@ -373,14 +423,29 @@ object SearchParams {
       "free"              -> searchParams.free.map(_.toString),
       "uploadedBy"        -> searchParams.uploadedBy,
       "labels"            -> listToCommas(searchParams.labels),
-      "hasMetadata"       -> listToCommas(searchParams.hasMetadata)
+      "hasMetadata"       -> listToCommas(searchParams.hasMetadata),
+      "persisted"         -> searchParams.persisted.map(_.toString)
     ).foldLeft(Map[String, String]()) {
       case (acc, (key, Some(value))) => acc + (key -> value)
       case (acc, (_,   None))        => acc
     }
 
+    type SearchParamValidation = Validation[InvalidUriParams, SearchParams]
+    type SearchParamValidations = ValidationNel[InvalidUriParams, SearchParams]
+    val maxSize = 200
+
+    def validate(searchParams: SearchParams): SearchParamValidations = {
+      // we just need to return the first `searchParams` as we don't need to manipulate them
+      // TODO: try reduce these
+      (validateLength(searchParams).toValidationNel |@| validateOffset(searchParams).toValidationNel)((s1, s2) => s1)
+    }
+
+    def validateOffset(searchParams: SearchParams): SearchParamValidation = {
+      if (searchParams.offset < 0) InvalidUriParams("offset cannot be less than 0").failure else searchParams.success
+    }
+
+    def validateLength(searchParams: SearchParams): SearchParamValidation = {
+      if (searchParams.length > maxSize) InvalidUriParams(s"length cannot exceed $maxSize").failure else searchParams.success
+    }
+
 }
-
-case class AggregateSearchParams(field: String, q: Option[String])
-
-case class ResultsSearchParams(field: String, q: Option[String])

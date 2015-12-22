@@ -6,18 +6,15 @@ import play.api.mvc.Controller
 
 import com.gu.mediaservice.lib.argo.ArgoHelpers
 import com.gu.mediaservice.lib.argo.model.Link
-import com.gu.mediaservice.lib.auth
-import com.gu.mediaservice.lib.auth.KeyStore
 import com.gu.mediaservice.model._
 
-import lib.Config
+import lib.{ControllerHelper, Config}
 
 object EditsApi extends Controller with ArgoHelpers {
 
-  import Config.{rootUri, loginUriTemplate, kahunaUri, keyStoreBucket, awsCredentials}
+  import Config.rootUri
 
-  val keyStore = new KeyStore(keyStoreBucket, awsCredentials)
-  val Authenticated = auth.Authenticated(keyStore, loginUriTemplate, kahunaUri)
+  val Authenticated = ControllerHelper.Authenticated
 
     // TODO: add links to the different responses esp. to the reference image
   val indexResponse = {
@@ -36,15 +33,7 @@ object EditsApi extends Controller with ArgoHelpers {
   def index = Authenticated { indexResponse }
 
   val usageRightsResponse = {
-    // FIXME: GuardianWitness should be there but isn't for simplicity;
-    // their images can be imported by drag and drop instead
-    // FIXME: Creating new instances? Rubbish ಠ_ಠ. I can't think of a way
-    // to access the `val`s of the classes though without instantiating them.
-    val usageRightsData =
-      List(PrImage(), Handout(), Screengrab(), SocialMedia(), Obituary(), Pool(),
-           StaffPhotographer("?", "?"), ContractPhotographer("?", "?"), CommissionedPhotographer("?", "?"),
-           Agency("?"), CommissionedAgency("?"), CrownCopyright()).sortWith(_.name.toLowerCase < _.name.toLowerCase)
-        .map(CategoryResponse.fromUsageRights)
+    val usageRightsData = UsageRights.all.map(CategoryResponse.fromUsageRights)
 
     respond(usageRightsData)
   }
@@ -57,18 +46,22 @@ case class CategoryResponse(
   name: String,
   cost: String,
   description: String,
+  defaultRestrictions: Option[String],
+  caution: Option[String],
   properties: List[UsageRightsProperty] = List()
 )
 object CategoryResponse {
   // I'd like to have an override of the `apply`, but who knows how you do that
   // with the JSON parsing stuff
-  def fromUsageRights(u: UsageRights): CategoryResponse =
+  def fromUsageRights(u: UsageRightsSpec): CategoryResponse =
     CategoryResponse(
-      value        = u.category,
-      name         = u.name,
-      cost         = u.defaultCost.getOrElse(Pay).toString,
-      description  = u.description,
-      properties   = UsageRightsProperty.getPropertiesForCat(u)
+      value               = u.category,
+      name                = u.name,
+      cost                = u.defaultCost.getOrElse(Pay).toString,
+      description         = u.description,
+      defaultRestrictions = u.defaultRestrictions,
+      caution             = u.caution,
+      properties          = UsageRightsProperty.getPropertiesForSpec(u)
     )
 
   implicit val categoryResponseWrites: Writes[CategoryResponse] = Json.writes[CategoryResponse]

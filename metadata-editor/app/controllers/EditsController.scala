@@ -4,24 +4,21 @@ package controllers
 import java.net.URI
 import java.net.URLDecoder.decode
 
-import com.gu.mediaservice.lib.argo.ArgoHelpers
-import com.gu.mediaservice.model._
-
 import scala.concurrent.Future
 
-import play.api.data._, Forms._
-import play.api.mvc.Controller
-import play.api.libs.json._
+import play.api.data.Forms._
+import play.api.data._
 import play.api.libs.concurrent.Execution.Implicits._
+import play.api.libs.json._
+import play.api.mvc.Controller
 
-import com.gu.mediaservice.lib.aws.{NoItemFound, DynamoDB}
-import lib._
+import com.amazonaws.AmazonServiceException
 
-import com.gu.mediaservice.lib.argo._
+import com.gu.mediaservice.lib.argo.ArgoHelpers
 import com.gu.mediaservice.lib.argo.model._
-
-import scalaz.ValidationNel
-import scalaz.syntax.validation._
+import com.gu.mediaservice.lib.aws.NoItemFound
+import com.gu.mediaservice.model._
+import lib._
 
 
 // FIXME: the argoHelpers are all returning `Ok`s (200)
@@ -42,32 +39,23 @@ import scalaz.syntax.validation._
 //   }
 // }
 
-object EditsController extends Controller with ArgoHelpers {
+object EditsController extends Controller with ArgoHelpers with DynamoEdits with EditsResponse {
 
-  import Config.rootUri
+  import UsageRightsMetadataMapper.usageRightsToMetadata
 
-  val Authenticated = EditsApi.Authenticated
-  val dynamo = new DynamoDB(Config.awsCredentials, Config.dynamoRegion, Config.editsTable)
-
-  def entityUri(id: String, endpoint: String = ""): URI =
-    URI.create(s"$rootUri/metadata/$id$endpoint")
+  val Authenticated = ControllerHelper.Authenticated
+  val metadataBaseUri = Config.services.metadataBaseUri
 
   def decodeUriParam(param: String): String = decode(param, "UTF-8")
 
   // TODO: Think about calling this `overrides` or something that isn't metadata
   def getAllMetadata(id: String) = Authenticated.async {
+    val emptyResponse = respond(Edits.getEmpty)(editsEntity(id))
     dynamo.get(id) map { dynamoEntry =>
-      val edits = dynamoEntry.as[Edits]
-
-      // We have to do the to JSON here as we are using a custom JSON writes.
-      // TODO: have the argo helpers allow you to do this
-      respond(Json.toJson(edits)(EditsResponse.editsResponseWrites(id)))
-
-    } recover {
-      // Empty object as no metadata edits recorded
-      case NoItemFound =>
-        respond(Json.toJson(Edits.getEmpty)(EditsResponse.editsResponseWrites(id)))
-    }
+      dynamoEntry.asOpt[Edits]
+        .map(respond(_)(editsEntity(id)))
+        .getOrElse(emptyResponse)
+    } recover { case NoItemFound => emptyResponse }
   }
 
   def getArchived(id: String) = Authenticated.async {
@@ -100,8 +88,8 @@ object EditsController extends Controller with ArgoHelpers {
     dynamo.setGet(id, "labels")
       .map(labelsCollection(id, _))
       .map {case (uri, labels) => respondCollection(labels)} recover {
-        case NoItemFound => respond(Array[String]())
-      }
+      case NoItemFound => respond(Array[String]())
+    }
   }
 
   def addLabels(id: String) = Authenticated.async { req =>
@@ -113,7 +101,9 @@ object EditsController extends Controller with ArgoHelpers {
           .setAdd(id, "labels", labels)
           .map(publish(id))
           .map(edits => labelsCollection(id, edits.labels.toSet))
-          .map {case (uri, labels) => respondCollection(labels)}
+          .map {case (uri, labels) => respondCollection(labels)} recover {
+          case _: AmazonServiceException => BadRequest
+        }
       }
     )
   }
@@ -145,6 +135,30 @@ object EditsController extends Controller with ArgoHelpers {
     )
   }
 
+  def setMetadataFromUsageRights(id: String) = Authenticated.async { req =>
+    dynamo.get(id) flatMap { dynamoEntry =>
+      val edits = dynamoEntry.as[Edits]
+      val originalMetadata = edits.metadata
+      val metadataOpt = edits.usageRights.flatMap(usageRightsToMetadata)
+
+      metadataOpt map { metadata =>
+        val mergedMetadata = originalMetadata.copy(
+          byline = metadata.byline orElse originalMetadata.byline,
+          credit = metadata.credit orElse originalMetadata.credit
+        )
+
+        dynamo.jsonAdd(id, "metadata", metadataAsMap(mergedMetadata))
+          .map(publish(id))
+          .map(edits => respond(edits.metadata, uri = Some(metadataUri(id))))
+      } getOrElse {
+        // just return the unmodified
+        Future.successful(respond(edits.metadata, uri = Some(metadataUri(id))))
+      }
+    } recover {
+      case NoItemFound => respondError(NotFound, "item-not-found", "Could not find image")
+    }
+  }
+
   def getUsageRights(id: String) = Authenticated.async {
     dynamo.jsonGet(id, "usageRights").map { dynamoEntry =>
       val usageRights = (dynamoEntry \ "usageRights").as[UsageRights]
@@ -166,20 +180,12 @@ object EditsController extends Controller with ArgoHelpers {
     dynamo.removeKey(id, "usageRights").map(publish(id)).map(edits => Accepted)
   }
 
-  def bindFromRequest[T](json: JsValue)(implicit fjs: Reads[T]): ValidationNel[EditsValidationError, T] =
-    (json \ "data").asOpt[T]
-      .map(_.successNel)
-      .getOrElse(EditsValidationError("unrecognised-form-data", "Unrecognised form data").failNel)
-
   // TODO: Move this to the dynamo lib
   def caseClassToMap[T](caseClass: T)(implicit tjs: Writes[T]): Map[String, String] =
     Json.toJson[T](caseClass).as[JsObject].as[Map[String, String]]
 
-  def labelsCollection(id: String, labels: Set[String]): (URI, Seq[EmbeddedEntity[String]]) = {
-    val labelsUri = EditsResponse.entityUri(id, "/labels")
-    (labelsUri, labels.map(EditsResponse.setUnitEntity(id, "labels", _)).toSeq)
-  }
-
+  def labelsCollection(id: String, labels: Set[String]): (URI, Seq[EmbeddedEntity[String]]) =
+    (labelsUri(id), labels.map(setUnitEntity(id, "labels", _)).toSeq)
 
   def publish(id: String)(metadata: JsObject): Edits = {
     val edits = metadata.as[Edits]
@@ -193,7 +199,6 @@ object EditsController extends Controller with ArgoHelpers {
     edits
   }
 
-
   // This get's the form error based on out data structure that we send over i.e.
   // { "data": {data} }
   def getDataListFormError(form: Form[List[String]]): String = {
@@ -202,8 +207,8 @@ object EditsController extends Controller with ArgoHelpers {
     }
     // only use the head error as they are going to be the same
     val message = form.errors.headOption
-                      .map(_.message + s", given data: ${printData(form.data)}")
-                      .getOrElse(s"Unknown error, given data: ${printData(form.data)}")
+      .map(_.message + s", given data: ${printData(form.data)}")
+      .getOrElse(s"Unknown error, given data: ${printData(form.data)}")
     message
   }
 
@@ -239,19 +244,19 @@ object EditsController extends Controller with ArgoHelpers {
   def trueOptional[T](mapping: Mapping[T]) = TrueOptionalMapping(mapping)
 
   val booleanForm: Form[Boolean] = Form(
-     single("data" -> boolean)
-       .transform[Boolean]({ case (value)        => value },
-                           { case value: Boolean => value })
+    single("data" -> boolean)
+      .transform[Boolean]({ case (value) => value },
+    { case value: Boolean => value })
   )
 
   val stringForm: Form[String] = Form(
-     single("data" -> text)
-       .transform[String]({ case (value)       => value },
-                          { case value: String => value })
+    single("data" -> text)
+      .transform[String]({ case (value) => value },
+    { case value: String => value })
   )
 
   val listForm: Form[List[String]] = Form(
-     single[List[String]]("data" -> list(nonEmptyText))
+    single[List[String]]("data" -> list(nonEmptyText))
   )
 
 }

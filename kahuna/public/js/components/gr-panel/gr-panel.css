@@ -51,33 +51,23 @@
     height: 100%;
 }
 
+.panel__empty-message {
+    padding: 10px;
+}
+
+.panel__close-panel {
+    position: absolute;
+    top: 15px;
+    right: 10px;
+}
+
 .batch-label .labels {
     white-space: normal;
 }
 
 .batch-label .labels .label,
-.batch-label .labels .label__add {
+.batch-label .labels {
     display: inline-block;
-}
-
-.batch-archive {
-    float: left;
-    width: 100%;
-    box-sizing: border-box;
-    /* ^ because it has elements floating in it */
-}
-
-.batch-archive .metadata-line {
-    float: left;
-}
-
-.batch-archive__action {
-    float: right;
-}
-
-.batch-archive--all-archived .metadata-line,
-.batch-archive--mixed .metadata-line .material-icons {
-    color: #ccc;
 }
 
 .batch-archive__archive:hover,

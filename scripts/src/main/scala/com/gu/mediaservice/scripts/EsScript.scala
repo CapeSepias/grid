@@ -7,57 +7,80 @@ import org.elasticsearch.common.unit.TimeValue
 
 import com.gu.mediaservice.lib.elasticsearch.{Mappings, ElasticSearchClient}
 
-
-object Reindex extends EsScript {
-
+object MoveIndex extends EsScript {
   def run(esHost: String, extraArgs: List[String]) {
 
     object EsClient extends ElasticSearchClient {
+      val imagesAlias = "imagesAlias"
       val port = esPort
       val host = esHost
       val cluster = esCluster
 
-      // Taken from:
-      // * http://blog.iterable.com/how-we-sped-up-elasticsearch-queries-by-100x-part-1-reindexing/
-      // * https://github.com/guardian/elasticsearch-remap-tool/blob/master/src/main/scala/ElasticSearch.scala
-      def reindex {
-        val scrollTime = new TimeValue(10 * 60 * 1000) // 10 minutes in milliseconds
-        val scrollSize = 500
+      def move {
         val srcIndex = getCurrentAlias.get // TODO: error handling if alias isn't attached
-
-        val srcIndexVersionCheck = """images_(\d+)""".r // FIXME: Find a way to add variables to regex
+        val srcIndexVersionCheck = """images_(\d+)""".r
         val srcIndexVersion = srcIndex match {
           case srcIndexVersionCheck(version) => version.toInt
           case _ => 1
         }
         val newIndex = s"${imagesIndexPrefix}_${srcIndexVersion+1}"
 
-        // 1. create new index
-        // 2. point alias to new index
-        // 3. remove alias from old index
-        // 4. fill new index
-        createIndex(newIndex)
         assignAliasTo(newIndex)
         removeAliasFrom(srcIndex)
+      }
+    }
 
-        // We only run the query once we've swapped the indices so as not to lose
-        // any data that is being added. We will have a few seconds of the index filling up
-        // TODO: Solve edgecase: Someone is editing a file that is not re-indexed yet
+    EsClient.move
+  }
+  def usageError: Nothing = {
+    System.err.println("Usage: MoveIndex <ES_HOST>")
+    sys.exit(1)
+  }
+}
+
+object Reindex extends EsScript {
+
+  def run(esHost: String, extraArgs: List[String]) {
+
+    object EsClient extends ElasticSearchClient {
+      val imagesAlias = "imagesAlias"
+      val port = esPort
+      val host = esHost
+      val cluster = esCluster
+
+      def reindex {
+        val scrollTime = new TimeValue(10 * 60 * 1000) // 10 minutes in milliseconds
+        val scrollSize = 500
+        val srcIndex = getCurrentAlias.get // TODO: error handling if alias isn't attached
+
+        val srcIndexVersionCheck = """images_(\d+)""".r
+        val srcIndexVersion = srcIndex match {
+          case srcIndexVersionCheck(version) => version.toInt
+          case _ => 1
+        }
+        val newIndex = s"${imagesIndexPrefix}_${srcIndexVersion+1}"
+
+        createIndex(newIndex)
+
         val query = client.prepareSearch(srcIndex)
           .setTypes(imageType)
           .setScroll(scrollTime)
           .setQuery(matchAllQuery)
           .setSize(scrollSize)
-          .addSort("uploadedBy", SortOrder.ASC)
+          .addSort("uploadTime", SortOrder.ASC)
 
         def reindexScroll(scroll: SearchResponse, done: Long = 0) {
           val total = scroll.getHits.totalHits
           val doing = done + scrollSize
+
+          // roughly accurate as we're using done, which is relative to scrollSize, rather than the actual number of docs in the new index
+          val percentage = (done.toFloat / total) * 100
+
           val hits = scroll.getHits.hits
 
-          if (hits.length > 0) {
+          if (hits.nonEmpty) {
             // TODO: Abstract out logging
-            System.out.println(s"Reindexing $doing of $total")
+            System.out.println(s"Reindexing $doing of $total ($percentage%)")
 
             val bulk = client.prepareBulk
 
@@ -71,6 +94,8 @@ object Reindex extends EsScript {
               .setScroll(scrollTime).execute.actionGet, doing)
           }
         }
+
+        Thread.sleep(1000)
 
         reindexScroll(query.execute.actionGet)
 
@@ -93,6 +118,7 @@ object UpdateMapping extends EsScript {
   def run(esHost: String, extraArgs: List[String]) {
     // TODO: add the ability to update a section of the mapping
     object EsClient extends ElasticSearchClient {
+      val imagesAlias = "imagesAlias"
       val port = esPort
       val host = esHost
       val cluster = esCluster

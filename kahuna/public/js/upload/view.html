@@ -1,6 +1,6 @@
 <gr-top-bar>
     <gr-top-bar-nav>
-        <a class="top-bar-item"
+        <a class="top-bar-item side-padded"
            ui:sref="search"><gr-icon>search</gr-icon>
            <span class="top-bar-item__label">Search</span></a>
     </gr-top-bar-nav>
@@ -8,37 +8,26 @@
 </gr-top-bar>
 
 <div class="page-wrapper">
-    <section class="section"
-             ng:if="ctrl.latestJob">
+    <file-prompt class="section"></file-prompt>
 
-        <div class="flex-container section-heading">
-            <h2>Your current uploads</h2>
-            <span class="flex-spacer"></span>
-            <a ng:controller="SessionCtrl" class="coloured-link" ui:sref="search.results({uploadedBy: user.email})">View all your uploads</a>
+    <section class="section"
+             ng:if="ctrl.latestJob && ctrl.latestJob.length > 0">
+
+        <div class="flex-container section-heading current-uploads">
+            <h2 class="flex-spacer">Your current uploads</h2>
+            <a ng:controller="SessionCtrl" class="coloured-link" ui:sref="search.results({uploadedBy: user.email, nonFree: true})">View all your uploads</a>
         </div>
 
         <ui-upload-jobs jobs="ctrl.latestJob"></ui-upload-jobs>
     </section>
 
-    <file-prompt ng:if="!ctrl.latestJob"></file-prompt>
-
-    <section class="section" ng:if="ctrl.myUploads.data.length > 0">
+    <section class="section">
         <div class="flex-container section-heading">
-            <h2>Your past 50 uploads</h2>
-            <span class="flex-spacer"></span>
-            <a ng:controller="SessionCtrl" class="coloured-link" ui:sref="search.results({uploadedBy: user.email})">View all your uploads</a>
+            <h2 class="flex-spacer">Your past 50 uploads</h2>
+            <a ng:controller="SessionCtrl" class="coloured-link" ui:sref="search.results({uploadedBy: user.email, nonFree: true})">View all your uploads</a>
         </div>
 
-        <ul>
-            <li ng:repeat="result in ctrl.myUploads.data" class="upload-result">
-                <ui-image-editor image="result"></ui-image-editor>
-                <gr-delete-image class="flex-right"
-                                 ng:if="ctrl.canBeDeleted(result)"
-                                 on-success="ctrl.onDeleteSuccess"
-                                 on-error="ctrl.onDeleteError"
-                                 image="result"></gr-delete-image>
-            </li>
-        </ul>
+        <recent-uploads></recent-uploads>
     </section>
 </div>
 

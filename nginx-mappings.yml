@@ -4,6 +4,7 @@ mappings:
     port: 9001
   - prefix: loader.media
     port: 9003
+    client_max_body_size: 20m
   - prefix: media
     port: 9005
   - prefix: cropper.media
@@ -12,5 +13,9 @@ mappings:
     port: 9007
   - prefix: media-imgops
     port: 9008
-  - prefix: media-auth
+  - prefix: media-usage
     port: 9009
+  - prefix: media-collections
+    port: 9010
+  - prefix: media-auth
+    port: 9011

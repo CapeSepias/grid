@@ -1,6 +1,6 @@
 #!/bin/sh
 
-ELASTICSEARCH_VERSION=1.3.4
+ELASTICSEARCH_VERSION=1.7.1
 ELASTICSEARCH_DIR=$(dirname $0)
 
 if [ -d "$ELASTICSEARCH_DIR/elasticsearch" ]; then
@@ -26,10 +26,8 @@ then
     sed -i -e 's,cluster.routing.allocation.awareness.attributes: aws_availability_zone,,g' elasticsearch/config/elasticsearch.yml
     cd elasticsearch
     ./bin/plugin -install mobz/elasticsearch-head
-    ./bin/plugin -install elasticsearch/elasticsearch-cloud-aws/2.3.0
-    ./bin/plugin -install lukas-vlcek/bigdesk
+    ./bin/plugin -install elasticsearch/elasticsearch-cloud-aws/2.7.1
     ./bin/plugin -install karmi/elasticsearch-paramedic
-    ./bin/plugin -install com.yakaz.elasticsearch.plugins/elasticsearch-action-updatebyquery/2.2.0
     echo "Done"
     echo "Start it with $ELASTICSEARCH_DIR/dev-start.sh"
 else

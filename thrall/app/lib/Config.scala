@@ -10,6 +10,8 @@ import com.gu.mediaservice.lib.config.{Properties, CommonPlayAppConfig}
 
 object Config extends CommonPlayAppConfig {
 
+  val appName = "thrall"
+
   val properties = Properties.fromPath("/etc/gu/thrall.properties")
 
   def queueUrl: String = properties("sqs.queue.url")
@@ -20,6 +22,8 @@ object Config extends CommonPlayAppConfig {
     new AmazonEC2Client(awsCredentials) <| (_ setEndpoint awsEndpoint)
 
   val imageBucket: String = properties("s3.image.bucket")
+
+  val imagesAlias = properties("es.index.alias")
 
   val thumbnailBucket: String = properties("s3.thumb.bucket")
 
@@ -37,4 +41,6 @@ object Config extends CommonPlayAppConfig {
   val persistenceIdentifier = properties("persistence.identifier")
 
   val healthyMessageRate = properties("sqs.message.min.frequency").toInt
+
+  val dynamoTopicArn: String = properties("indexed.image.sns.topic.arn")
 }

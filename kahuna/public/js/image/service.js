@@ -4,7 +4,7 @@ import '../edits/service';
 
 export const imageService = angular.module('gr.image.service', ['kahuna.edits.service']);
 
-imageService.factory('imageService', ['editsService', function(editsService) {
+imageService.factory('imageService', [function() {
     function forImage(image) {
         return {
             usageRights: usageRights(image),
@@ -13,33 +13,38 @@ imageService.factory('imageService', ['editsService', function(editsService) {
     }
 
     function usageRights(image) {
-        // we override the data with the overrides data from the edits API.
-        const data = angular.extend({},
-            image.data.usageRights,
-            image.data.userMetadata.data.usageRights.data
-        );
-        const resource = image.data.userMetadata.data.usageRights;
-
-        const save = newData =>
-            editsService.update(resource, newData, image).then(resource => resource.data);
-
-        const remove = () =>
-            editsService.remove(resource, image).then(() => image.data.usageRights);
-
-        return { data, save, remove };
-    }
-
-    function hasExportsOfType(image, type) {
-        return image.data.exports &&
-                image.data.exports.some(ex => ex.type === type);
+        return {
+            image: image,
+            data: image.data.usageRights
+        };
     }
 
     function getStates(image) {
+        const persistReasons = image.data.persisted.reasons.map(reason => {
+            switch (reason) {
+                case 'exports':
+                    return 'cropped';
+                case 'persistence-identifier':
+                    return 'from Picdar';
+                case 'photographer-category':
+                    return 'categorised as photographer';
+                case 'illustrator-category':
+                    return 'categorised as illustrator';
+                case 'commissioned-agency':
+                    return 'categorised as agency commissioned';
+                default:
+                    return reason;
+            }
+        });
+
         return {
             cost: image.data.cost,
-            hasCrops: hasExportsOfType(image, 'crop'),
+            hasCrops: image.data.exports && image.data.exports.length > 0,
             isValid: image.data.valid,
-            canDelete: image.getAction('delete').then(action => !! action)
+            canDelete: image.getAction('delete').then(action => !! action),
+            canArchive: image.data.persisted.value === false ||
+                (persistReasons.length === 1 && persistReasons[0] === 'archived'),
+            persistedReasons: persistReasons.join('; ')
         };
     }
 

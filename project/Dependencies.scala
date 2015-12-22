@@ -23,11 +23,21 @@ object Dependencies {
 
   val elasticsearchDeps = Seq("org.elasticsearch" % "elasticsearch" % elasticsearchVersion)
 
-  val awsDeps = Seq("com.amazonaws" % "aws-java-sdk" % "1.9.24")
+  val awsDeps = Seq(
+    ("com.amazonaws" % "aws-java-sdk" % "1.9.34")
+  )
 
   val pandaDeps = Seq(
-    ("com.gu" %% "pan-domain-auth-core" % "0.2.7") exclude ("xpp3", "xpp3") exclude("com.google.guava", "guava-jdk5"),
-    ("com.gu" %% "pan-domain-auth-play" % "0.2.7")
+    ("com.gu" %% "pan-domain-auth-core" % "0.2.10") exclude ("xpp3", "xpp3") exclude("com.google.guava", "guava-jdk5"),
+    ("com.gu" %% "pan-domain-auth-play" % "0.2.10")
+  )
+
+  val guDeps = Seq(
+    "com.gu" %% "content-api-client" % "7.11"
+  )
+
+  val reactiveXDeps = Seq(
+    "io.reactivex" %% "rxscala" % "0.25.0"
   )
 
   val scalazDeps = Seq(
@@ -43,6 +53,10 @@ object Dependencies {
     "org.parboiled" %% "parboiled" % "2.1.0"
   )
 
+  val loggingDeps = Seq(
+    "com.gu" % "kinesis-logback-appender" % "1.0.5",
+    "net.logstash.logback" % "logstash-logback-encoder" % "4.4"
+  )
 
   val commonsNetDeps = Seq(
     "commons-net" % "commons-net" % "3.3",

@@ -4,19 +4,43 @@ import '../../preview/image';
 import '../../analytics/track';
 import '../../components/gr-delete-image/gr-delete-image';
 import '../../image/service';
+import '../../edits/service';
+import '../../services/label';
+import '../../services/preset-label';
 
 export var jobs = angular.module('kahuna.upload.jobs', [
     'kahuna.preview.image',
     'gr.image.service',
-    'analytics.track'
+    'analytics.track',
+    'kahuna.services.label',
+    'kahuna.services.presetLabel',
+    'kahuna.edits.service'
 ]);
 
 
 jobs.controller('UploadJobsCtrl', [
-    '$window', 'apiPoll', 'track', 'imageService',
-    function($window, apiPoll, track, imageService) {
+    '$rootScope',
+    '$scope',
+    '$window',
+    'apiPoll',
+    'track',
+    'imageService',
+    'labelService',
+    'presetLabelService',
+    'editsService',
+
+    function($rootScope,
+            $scope,
+            $window,
+            apiPoll,
+            track,
+            imageService,
+            labelService,
+            presetLabelService,
+            editsService) {
 
     var ctrl = this;
+    const presetLabels = presetLabelService.getLabels();
 
     // State machine-esque async transitions
     const eventName = 'Image upload';
@@ -43,16 +67,29 @@ jobs.controller('UploadJobsCtrl', [
                     jobItem.canBeDeleted = deletable;
                 });
 
+                // TODO: we shouldn't have to do this ;_;
+                // If the image is updated (e.g. label added,
+                // archived, etc), refresh the copy we hold
+                $rootScope.$on('image-updated', (e, updatedImage) => {
+                    if (updatedImage.data.id === image.data.id) {
+                        jobItem.image = updatedImage;
+                    }
+                });
+
                 // we use the filename of the image if the description is missing
                 if (!jobItem.image.data.metadata.description) {
                     const newDescription = jobItem.name
                         .substr(0, jobItem.name.lastIndexOf('.'))
-                        .replace('_', ' ');
+                        .replace(/_/g, ' ');
 
-                    jobItem.image.data.metadata.description = newDescription;
+                    editsService.updateMetadataField(jobItem.image, 'description', newDescription);
                 }
 
-                timedTrack.success(eventName);
+                if (presetLabels) {
+                    labelService.add(image, presetLabels);
+                }
+
+                timedTrack.success(eventName, { 'Labels' : presetLabels.length} );
             }, error => {
                 jobItem.status = 'upload error';
                 jobItem.error = error.message;
@@ -60,7 +97,12 @@ jobs.controller('UploadJobsCtrl', [
                 timedTrack.failure(eventName, { 'Failed on': 'index' });
             });
         }, error => {
-            const message = error.body && error.body.errorMessage || 'unknown';
+            const reason = error.body && error.body.errorKey;
+
+            const message = reason === 'unsupported-type' ?
+                'The Grid only supports JPG images. Please convert the image and try again.' :
+                error.body && error.body.errorMessage || 'unknown';
+
             jobItem.status = 'upload error';
             jobItem.error = message;
 
@@ -71,23 +113,36 @@ jobs.controller('UploadJobsCtrl', [
     // this needs to be a function due to the stateful `jobItem`
     ctrl.jobImages = () => ctrl.jobs.map(jobItem => jobItem.image);
 
-    ctrl.onDeleteSuccess = function (resp, image) {
-        var index = ctrl.jobs.findIndex(i => i.image.data.id === image.data.id);
+    ctrl.removeJob = (job) => {
+        const index = ctrl.jobs.findIndex(j => j.name === job.name);
 
         if (index > -1) {
             ctrl.jobs.splice(index, 1);
         }
     };
 
-    ctrl.onDeleteError = function (err) {
+    const freeImageDeleteListener = $rootScope.$on('images-deleted', (e, images) => {
+        images.forEach(image => {
+            var index = ctrl.jobs.findIndex(i => i.image.data.id === image.data.id);
+
+            if (index > -1) {
+                ctrl.jobs.splice(index, 1);
+            }
+        });
+    });
+
+    const freeImageDeleteFailListener = $rootScope.$on('image-delete-failure', (err, image) => {
         if (err.body && err.body.errorMessage) {
             $window.alert(err.body.errorMessage);
+        } else {
+            $window.alert(`Failed to delete image ${image.data.id}`);
         }
-        else {
-            $window.alert('Failed to delete image.');
-        }
+    });
 
-    };
+    $scope.$on('$destroy', function() {
+        freeImageDeleteListener();
+        freeImageDeleteFailListener();
+    });
 }]);
 
 

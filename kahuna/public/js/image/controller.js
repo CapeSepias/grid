@@ -1,21 +1,35 @@
 import angular from 'angular';
+import 'angular-hotkeys';
 
 import '../image/service';
-import '../edits/service';
-import '../analytics/track';
 import '../components/gr-delete-image/gr-delete-image';
 import '../components/gr-add-label/gr-add-label';
+import '../downloader/downloader';
+import '../components/gr-crop-image/gr-crop-image';
+import '../components/gr-delete-crops/gr-delete-crops';
+import '../components/gr-image-metadata/gr-image-metadata';
+import '../components/gr-image-persist-status/gr-image-persist-status';
+import '../components/gr-metadata-validity/gr-metadata-validity';
+import '../components/gr-image-cost-message/gr-image-cost-message';
+import '../components/gr-export-original-image/gr-export-original-image';
+import '../components/gr-image-usage/gr-image-usage';
 
-var image = angular.module(
-        'kahuna.image.controller',
-        [
-            'kahuna.edits.service',
-            'gr.image.service',
-            'analytics.track',
-            'gr.deleteImage',
-            'gr.addLabel'
-        ]
-);
+var image = angular.module('kahuna.image.controller', [
+    'kahuna.edits.service',
+    'gr.image.service',
+    'gr.deleteImage',
+    'gr.addLabel',
+    'gr.downloader',
+    'gr.cropImage',
+    'gr.deleteCrops',
+    'gr.imagePersistStatus',
+    'gr.imageMetadata',
+    'gr.metadataValidity',
+    'gr.imageCostMessage',
+    'gr.exportOriginalImage',
+    'gr.imageUsage',
+    'cfp.hotkeys'
+]);
 
 image.controller('ImageCtrl', [
     '$rootScope',
@@ -26,12 +40,11 @@ image.controller('ImageCtrl', [
     'image',
     'mediaApi',
     'optimisedImageUri',
+    'lowResImageUri',
     'cropKey',
     'mediaCropper',
-    'editsService',
-    'editsApi',
     'imageService',
-    'track',
+    'hotkeys',
 
     function ($rootScope,
               $scope,
@@ -41,58 +54,40 @@ image.controller('ImageCtrl', [
               image,
               mediaApi,
               optimisedImageUri,
+              lowResImageUri,
               cropKey,
               mediaCropper,
-              editsService,
-              editsApi,
               imageService,
-              track) {
+              hotkeys) {
 
-        var ctrl = this;
+        let ctrl = this;
 
-        ctrl.credits = function(searchText) {
-            return ctrl.metadataSearch('credit', searchText);
-        };
-
-        ctrl.metadataSearch = (field, q) => {
-            return mediaApi.metadataSearch(field,  { q }).then(resource => {
-                return resource.data.map(d => d.key);
-            });
-        };
+        hotkeys.bindTo($scope).add({
+            combo: 'c',
+            description: 'Crop image',
+            callback: () => $state.go('crop', {imageId: ctrl.image.data.id})
+        });
 
         ctrl.image = image;
-        ctrl.usageRights = imageService(image).usageRights;
         ctrl.optimisedImageUri = optimisedImageUri;
-
-        ctrl.setUsageCategory = (cats, categoryCode) => {
-            const usageCategory = cats.find(cat => cat.value === categoryCode);
-
-            ctrl.usageCategory = usageCategory ? usageCategory.name : categoryCode;
-        };
-
-        editsApi.getUsageRightsCategories().then((cats) => {
-            ctrl.usageCategories = cats;
-            ctrl.setUsageCategory(cats, ctrl.usageRights.data.category);
-        });
+        ctrl.lowResImageUri = lowResImageUri;
 
         // TODO: we should be able to rely on ctrl.crop.id instead once
         // all existing crops are migrated to have an id (they didn't
         // initially)
         ctrl.cropKey = cropKey;
 
-        // Alias for convenience in view
-        ctrl.metadata = image.data.metadata;
-
-        // Map of metadata location field to query filter name
-        ctrl.locationFieldMap = {
-            'subLocation': 'location',
-            'city': 'city',
-            'state': 'state',
-            'country': 'country'
-        };
-
-        ctrl.isUsefulMetadata = isUsefulMetadata;
         ctrl.cropSelected = cropSelected;
+
+        imageService(ctrl.image).states.canDelete.then(deletable => {
+            ctrl.canBeDeleted = deletable;
+        });
+
+        ctrl.onCropsDeleted = () => {
+            // a bit nasty - but it updates the state of the page better than trying to do that in
+            // the client.
+            $state.go('image', {imageId: ctrl.image.data.id, crop: undefined}, {reload: true});
+        };
 
         // TODO: move this to a more sensible place.
         function getCropDimensions() {
@@ -107,8 +102,12 @@ image.controller('ImageCtrl', [
         }
 
         mediaCropper.getCropsFor(image).then(crops => {
-            ctrl.crops = crops;
             ctrl.crop = crops.find(crop => crop.id === cropKey);
+            ctrl.fullCrop = crops.find(crop => crop.specification.type === 'full');
+            ctrl.crops = crops.filter(crop => crop.specification.type === 'crop');
+            //boolean version for use in template
+            ctrl.hasFullCrop = angular.isDefined(ctrl.fullCrop);
+            ctrl.hasCrops = ctrl.crops.length > 0;
         }).finally(() => {
             ctrl.dimensions = angular.isDefined(ctrl.crop) ?
                 getCropDimensions() : getImageDimensions();
@@ -118,18 +117,6 @@ image.controller('ImageCtrl', [
             }
         });
 
-        updateAbilities(image);
-
-        var ignoredMetadata = [
-            'title', 'description', 'copyright', 'keywords', 'byline',
-            'credit', 'subLocation', 'city', 'state', 'country',
-            'dateTaken', 'specialInstructions'
-        ];
-
-        function isUsefulMetadata(metadataKey) {
-            return ignoredMetadata.indexOf(metadataKey) === -1;
-        }
-
         function cropSelected(crop) {
             $rootScope.$emit('events:crop-selected', {
                 image: ctrl.image,
@@ -137,64 +124,22 @@ image.controller('ImageCtrl', [
             });
         }
 
-        function updateAbilities(image) {
-            imageService(image).states.canDelete.then(deletable => {
-                ctrl.canBeDeleted = deletable;
-            });
-
-            mediaCropper.canBeCropped(image).then(croppable => {
-                ctrl.canBeCropped = croppable;
-            });
-
-            editsService.canUserEdit(image).then(editable => {
-                ctrl.userCanEdit = editable;
-            });
-        }
-
-        const freeUpdateListener = $rootScope.$on('image-updated', (e, updatedImage) => {
-            ctrl.image = updatedImage;
-            ctrl.usageRights = imageService(ctrl.image).usageRights;
-            ctrl.setUsageCategory(ctrl.usageCategories, ctrl.usageRights.data.category);
+        const freeImageDeleteListener = $rootScope.$on('images-deleted', () => {
+            $state.go('search');
         });
 
-        ctrl.updateMetadataField = function (field, value) {
-            return editsService.updateMetadataField(image, field, value)
-                .then((updatedImage) => {
-                    if (updatedImage) {
-                        ctrl.image = updatedImage;
-                        updateAbilities(updatedImage);
-                        track.success('Metadata edit', { field: field });
-                    }
-                })
-                .catch(() => {
-                    track.failure('Metadata edit', { field: field });
-
-                    /*
-                     Save failed.
-
-                     Per the angular-xeditable docs, returning a string indicates an error and will
-                     not update the local model, nor will the form close (so the edit is not lost).
-                     Instead, a message is shown and the field keeps focus for user to edit again.
-
-                     http://vitalets.github.io/angular-xeditable/#onbeforesave
-                     */
-                    return 'failed to save (press esc to cancel)';
-                });
-        };
-
-        ctrl.onDeleteSuccess = function () {
-            $state.go('search');
-        };
-
-        ctrl.onDeleteError = function (err) {
-            if (err.body.errorKey === 'image-not-found') {
-                $state.go('search');
-            } else {
+        const freeImageDeleteFailListener = $rootScope.$on('image-delete-failure', (err, image) => {
+            if (err && err.body && err.body.errorMessage) {
                 $window.alert(err.body.errorMessage);
+            } else {
+                // Possibly not receiving a proper image object sometimes?
+                const imageId = image && image.data && image.data.id || 'Unknown ID';
+                $window.alert(`Failed to delete image ${imageId}`);
             }
-        };
+        });
 
         $scope.$on('$destroy', function() {
-            freeUpdateListener();
+            freeImageDeleteListener();
+            freeImageDeleteFailListener();
         });
     }]);

@@ -1,10 +1,13 @@
 import sbt._
 import sbt.Keys._
 import play.Play.autoImport._
+import com.typesafe.sbt.SbtNativePackager.autoImport._
 import plugins.PlayArtifact._
+import Dependencies._
+
+// Note: assembly now just used for helper and legacy apps
 import sbtassembly.Plugin.{AssemblyKeys, MergeStrategy}
 import AssemblyKeys._
-import Dependencies._
 
 
 object Build extends Build {
@@ -17,15 +20,16 @@ object Build extends Build {
       version      := "0.1",
       resolvers ++= Seq(
         "Typesafe Repository" at "http://repo.typesafe.com/typesafe/releases/",
-        "scalaz-stream" at "http://dl.bintray.com/pchiusano/maven"),
+        "scalaz-stream" at "http://dl.bintray.com/pchiusano/maven",
+        Resolver.sonatypeRepo("releases")),
       scalacOptions ++= Seq("-feature", "-deprecation", "-language:higherKinds", "-Xfatal-warnings")
     ) ++
     net.virtualvoid.sbt.graph.Plugin.graphSettings
 
   val lib = project("common-lib")
-    .libraryDependencies(awsDeps ++ elasticsearchDeps ++
+    .libraryDependencies(loggingDeps ++ awsDeps ++ elasticsearchDeps ++
       playDeps ++ playWsDeps ++ scalazDeps ++ commonsIODeps ++ akkaAgentDeps ++
-      pandaDeps)
+      pandaDeps ++ imagingDeps)
     .testDependencies(scalaCheckDeps ++ scalaTestDeps)
 
   val thrall = playProject("thrall")
@@ -33,7 +37,6 @@ object Build extends Build {
 
   val kahuna = playProject("kahuna")
     .libraryDependencies(playWsDeps)
-    .settings(includeAssetsSettings: _*)
 
   val auth = playProject("auth")
     .libraryDependencies(playWsDeps)
@@ -45,12 +48,21 @@ object Build extends Build {
 
   val cropService = playProject("cropper")
     .libraryDependencies(awsDeps ++ imagingDeps ++ playWsDeps)
+    .testDependencies(scalaTestDeps)
 
   val editorService = playProject("metadata-editor")
     .libraryDependencies(awsDeps ++ playWsDeps)
+    .testDependencies(scalaTestDeps)
+
+  val usageService = playProject("usage")
+    .libraryDependencies(awsDeps ++ playWsDeps ++ reactiveXDeps ++ guDeps)
 
   val imageLoader = playProject("image-loader")
     .libraryDependencies(awsDeps ++ imagingDeps)
+    .testDependencies(scalaTestDeps)
+
+  val collections = playProject("collections")
+    .libraryDependencies(awsDeps)
     .testDependencies(scalaTestDeps)
 
   val ftpWatcher = playProject("ftp-watcher")
@@ -77,13 +89,13 @@ object Build extends Build {
     .settings(sbtassembly.Plugin.assemblySettings: _*)
     .settings(playArtifactSettings: _*)
     .settings(fiddlyExtraAssemblySettingsForExport: _*)
-    .settings(assemblyMergeSettings: _*)
 
   def fiddlyExtraAssemblySettingsForExport = Seq(
     mergeStrategy in assembly <<= (mergeStrategy in assembly) { (old) => {
       case "version.txt" => MergeStrategy.first
       case "play.plugins" => MergeStrategy.first
       case "logback.xml" => MergeStrategy.first
+      case "play/core/server/ServerWithStop.class" => MergeStrategy.first
       case x => old(x)
     }}
   )
@@ -107,19 +119,5 @@ object Build extends Build {
         <exclude org="org.springframework"/>
         <exclude org="org.scala-tools.sbt"/>
       </dependencies>
-  ) ++ assemblyMergeSettings
-
-  def assemblyMergeSettings = Seq(
-    mergeStrategy in assembly <<= (mergeStrategy in assembly) { (old) => {
-      case f if f.startsWith("org/apache/lucene/index/") => MergeStrategy.first
-      case "play/core/server/ServerWithStop.class" => MergeStrategy.first
-      case "ehcache.xml" => MergeStrategy.first
-      case x => old(x)
-    }}
-  )
-
-  // Ensure the static assets Play packages separately are included in the Assembly JAR
-  def includeAssetsSettings = Seq(
-    fullClasspath in assembly += Attributed.blank(PlayKeys.playPackageAssets.value)
   )
 }

@@ -3,7 +3,9 @@ package lib.querysyntax
 import org.joda.time.DateTime
 import org.parboiled2._
 
-class QuerySyntax(val input: ParserInput) extends Parser {
+import com.gu.mediaservice.lib.elasticsearch.ImageFields
+
+class QuerySyntax(val input: ParserInput) extends Parser with ImageFields {
   def Query = rule { Expression ~ EOI }
 
   def Expression = rule { zeroOrMore(Term) separatedBy Whitespace }
@@ -14,13 +16,14 @@ class QuerySyntax(val input: ParserInput) extends Parser {
 
 
   def Filter = rule {
-    ScopedMatch ~> Match | HashMatch |
+    ScopedMatch ~> Match | HashMatch | CollectionRule |
     DateMatch ~> Match | AtMatch |
     AnyMatch
   }
 
   def ScopedMatch = rule { MatchField ~ ':' ~ MatchValue }
-  def HashMatch = rule { '#' ~ MatchValue ~> (label => Match(SingleField("labels"), label)) }
+  def HashMatch = rule      { '#' ~ MatchValue      ~> (label      => Match(SingleField(getFieldPath("labels")), label)) }
+  def CollectionRule = rule { '~' ~ ExactMatchValue ~> (collection => Match(HierarchyField(getFieldPath("pathHierarchy"), collection.string), collection)) }
 
   def MatchField = rule { capture(AllowedFieldName) ~> resolveNamedField _ }
 
@@ -39,20 +42,23 @@ class QuerySyntax(val input: ParserInput) extends Parser {
     "label"
   }
 
-  def resolveNamedField(name: String): Field = name match {
-    case "uploader"            => SingleField("uploadedBy")
-    case "in"                  => MultipleField(List("location", "city", "state", "country"))
-    case "by" | "photographer" => SingleField("byline")
-    case "location"            => SingleField("subLocation")
-    case "label"               => SingleField("labels")
-    case "keyword"             => SingleField("keywords")
-    case "collection"          => SingleField("suppliersCollection")
-    case fieldName             => SingleField(fieldName)
+  def resolveNamedField(name: String): Field = (name match {
+    case "uploader"            => "uploadedBy"
+    case "label"               => "labels"
+    case "collection"          => "suppliersCollection"
+    case "location"            => "subLocation"
+    case "by" | "photographer" => "byline"
+    case "keyword"             => "keywords"
+    case fieldName             => fieldName
+  }) match {
+    case "in" => MultipleField(List("location", "city", "state", "country").map(getFieldPath))
+    case field => SingleField(getFieldPath(field))
   }
 
 
   def AnyMatch = rule { MatchValue ~> (v => Match(AnyField, v)) }
 
+  def ExactMatchValue = rule { QuotedString ~> Phrase | String ~> Phrase }
 
   // Note: order matters, check for quoted string first
   def MatchValue = rule { QuotedString ~> Phrase | String ~> Words }
@@ -63,7 +69,7 @@ class QuerySyntax(val input: ParserInput) extends Parser {
   // TODO: also comparisons
   def DateMatch = rule { MatchDateField ~ ':' ~ MatchDateValue }
 
-  def AtMatch = rule { '@' ~ MatchDateValue ~> (range => Match(SingleField("uploadTime"), range)) }
+  def AtMatch = rule { '@' ~ MatchDateValue ~> (range => Match(SingleField(getFieldPath("uploadTime")), range)) }
 
   def MatchDateField = rule { capture(AllowedDateFieldName) ~> resolveDateField _ }
 

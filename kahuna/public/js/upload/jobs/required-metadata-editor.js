@@ -20,8 +20,10 @@ jobs.controller('RequiredMetadataEditorCtrl',
 
     ctrl.saving = false;
     ctrl.disabled = () => Boolean(ctrl.saving || ctrl.externallyDisabled);
-    ctrl.metadata = metadataFromOriginal(ctrl.originalMetadata);
     ctrl.saveOnTime = 750; // ms
+    // We do this check to ensure the copyright field doesn't disappear
+    // if we set it to "".
+    ctrl.copyrightWasInitiallyThere = !!ctrl.originalMetadata.copyright;
 
     ctrl.save = function() {
         ctrl.saving = true;
@@ -30,7 +32,7 @@ jobs.controller('RequiredMetadataEditorCtrl',
         var cleanMetadata = {};
         Object.keys(ctrl.metadata).forEach(key => {
             if (ctrl.metadata[key] !== ctrl.saveWhenChangedFrom[key]) {
-                cleanMetadata[key] = ctrl.metadata[key];
+                cleanMetadata[key] = ctrl.metadata[key] || '';
             }
         });
 
@@ -39,7 +41,6 @@ jobs.controller('RequiredMetadataEditorCtrl',
             then(resource => {
                 ctrl.resource = resource;
             }).
-            catch(() => $window.alert('Failed to save the changes, please try again.')).
             finally(() => ctrl.saving = false);
     };
 
@@ -48,6 +49,11 @@ jobs.controller('RequiredMetadataEditorCtrl',
             return resource.data.map(d => d.key);
         });
     };
+
+    // As we make a copy of this, we need to watch it
+    // in case the metadata changes from above.
+    $scope.$watch(() => ctrl.originalMetadata, metadata =>
+        ctrl.metadata = metadataFromOriginal(metadata));
 
     // TODO: Find a way to broadcast more selectively
     const batchApplyMetadataEvent = 'events:batch-apply:metadata';

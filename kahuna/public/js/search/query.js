@@ -8,6 +8,7 @@ import moment from 'moment';
 import '../util/eq';
 import '../components/gu-date-range/gu-date-range';
 import template from './query.html!text';
+import './syntax/syntax';
 
 import '../analytics/track';
 
@@ -16,6 +17,7 @@ export var query = angular.module('kahuna.search.query', [
     // 'ngAnimate',
     'util.eq',
     'gu-dateRange',
+    'grSyntax',
     'analytics.track'
 ]);
 
@@ -23,7 +25,7 @@ query.controller('SearchQueryCtrl',
                  ['$scope', '$state', '$stateParams', 'onValChange', 'mediaApi', 'track',
                  function($scope, $state, $stateParams, onValChange , mediaApi, track) {
 
-    var ctrl = this;
+    const ctrl = this;
 
     ctrl.ordering = {
         orderBy: $stateParams.orderBy
@@ -41,26 +43,31 @@ query.controller('SearchQueryCtrl',
 
     // Note that this correctly uses local datetime and returns
     // midnight for the local user
-    var lastMidnight = moment().startOf('day').toISOString();
-
-    var past24Hours = moment().subtract(24, 'hours').toISOString();
-    var pastWeek = moment().subtract(7, 'days').toISOString();
+    const lastMidnight  = moment().startOf('day').toISOString();
+    const past24Hours   = moment().subtract(24, 'hours').toISOString();
+    const pastWeek      = moment().subtract(7, 'days').toISOString();
+    const past6Months   = moment().subtract(6, 'months').toISOString();
+    const pastYear      = moment().subtract(1, 'years').toISOString();
 
     ctrl.sinceOptions = [
         {label: 'Anytime'},   // value: undefined
         {label: 'Today',         value: lastMidnight},
         {label: 'Past 24 hours', value: past24Hours},
-        {label: 'Past week',     value: pastWeek}
+        {label: 'Past week',     value: pastWeek},
+        {label: 'Past 6 months', value: past6Months},
+        {label: 'Past year',     value: pastYear}
     ];
 
     Object.keys($stateParams)
           .forEach(setAndWatchParam);
 
-    // pass undefined to the state on empty to remove the QueryString
-    function valOrUndefined(str) { return str || undefined; }
+    // URL parameters are not decoded when taken out of the params.
+    // Might be fixed with: https://github.com/angular-ui/ui-router/issues/1759
+    // Pass undefined to the state on empty to remove the QueryString
+    function valOrUndefined(str) { return str ? str : undefined; }
 
     function setAndWatchParam(key) {
-        ctrl.filter[key] = $stateParams[key];
+        ctrl.filter[key] = valOrUndefined($stateParams[key]);
 
         $scope.$watch(() => $stateParams[key], onValChange(newVal => {
             // FIXME: broken for 'your uploads'

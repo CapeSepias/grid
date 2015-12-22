@@ -1,9 +1,13 @@
 package lib.elasticsearch
 
+import com.gu.mediaservice.lib.elasticsearch.ImageFields
+import com.gu.mediaservice.model._
 import lib.usagerights.{DeprecatedConfig => UsageRightsDepConfig}
 import com.gu.mediaservice.lib.config.UsageRightsConfig
+import org.elasticsearch.index.query.FilterBuilder
 
 import scalaz.syntax.std.list._
+import scalaz.NonEmptyList
 
 import lib.Config
 
@@ -13,81 +17,75 @@ trait SearchFilters extends ImageFields {
   val validFilter   = Config.requiredMetadata.map(metadataField).toNel.map(filters.exists)
   val invalidFilter = Config.requiredMetadata.map(metadataField).toNel.map(filters.anyMissing)
 
-  // NOTE: cost matching using credit/source soon to be deprecated
-
+  // New Cost Model
   import UsageRightsConfig.{ suppliersCollectionExcl, freeSuppliers, payGettySourceList }
-  import UsageRightsDepConfig.{ freeCreditList, freeSourceList }
-
-  // Warning: this requires the capitalisation to be exact; we may want to sanitise the credits
-  // to a canonical representation in the future
-  val creditFilter  = freeCreditList.toNel.map(cs => filters.terms(metadataField("credit"), cs))
-  val sourceFilter  = freeSourceList.toNel.map(cs => filters.terms(metadataField("source"), cs))
-  val freeWhitelist = (creditFilter, sourceFilter) match {
-    case (Some(credit), Some(source)) => Some(filters.or(credit, source))
-    case (creditOpt,    sourceOpt)    => creditOpt orElse sourceOpt
-  }
-  val sourceExclFilter = payGettySourceList.toNel.map(cs => filters.terms(metadataField("source"), cs))
-  val freeCreditFilter = (freeWhitelist, sourceExclFilter) match {
-    case (Some(whitelist), Some(sourceExcl)) => Some(filters.bool.must(whitelist).mustNot(sourceExcl))
-    case (whitelistOpt,    sourceExclOpt)    => whitelistOpt orElse sourceExclOpt
-  }
-
-
-  // NOTE: cost matching using supplier/suppliersCollection soon to take over credit/source
 
   val (suppliersWithExclusions, suppliersNoExclusions) = freeSuppliers.partition(suppliersCollectionExcl.contains)
   val suppliersWithExclusionsFilters = for {
     supplier            <- suppliersWithExclusions
     excludedCollections <- suppliersCollectionExcl.get(supplier).flatMap(_.toNel)
   } yield {
-      filters.bool.must(
-        filters.term(usageRightsField("supplier"), supplier)
-      ).mustNot(
-        filters.terms(usageRightsField("suppliersCollection"), excludedCollections)
-      )
-    }
+    filters.bool.must(
+      filters.term(usageRightsField("supplier"), supplier)
+    ).mustNot(
+      filters.terms(usageRightsField("suppliersCollection"), excludedCollections)
+    )
+  }
   val suppliersWithExclusionsFilter = suppliersWithExclusionsFilters.toList.toNel.map(filters.or)
-
   val suppliersNoExclusionsFilter = suppliersNoExclusions.toNel.map(filters.terms(usageRightsField("supplier"), _))
-  val freeSupplierFilter = (suppliersWithExclusionsFilter, suppliersNoExclusionsFilter) match {
-    case (Some(withExclusions), Some(noExclusions)) => Some(filters.or(withExclusions, noExclusions))
-    case (withExclusionsOpt,    noExclusionsOpt)    => withExclusionsOpt orElse noExclusionsOpt
-  }
-
-
-  // Merge legacy and new way of matching free images (matching either is enough)
-  val freeMetadataFilter = (freeCreditFilter, freeSupplierFilter) match {
-    case (Some(freeCredit), Some(freeSupplier)) => Some(filters.or(freeCredit, freeSupplier))
-    case (freeCreditOpt,    freeSupplierOpt)    => freeCreditOpt orElse freeSupplierOpt
-  }
-
+  val freeSupplierFilter = filterOrFilter(suppliersWithExclusionsFilter, suppliersNoExclusionsFilter)
 
   // We're showing `Conditional` here too as we're considering them potentially
   // free. We could look into sending over the search query as a cost filter
   // that could take a comma separated list e.g. `cost=free,conditional`.
   val freeUsageRightsFilter = freeToUseCategories.toNel.map(filters.terms(usageRightsField("category"), _))
 
-  val freeFilter = (freeMetadataFilter, freeUsageRightsFilter) match {
-    case (Some(freeMetadata), Some(freeUsageRights)) => Some(filters.or(freeMetadata, freeUsageRights))
-    case (freeMetadataOpt,    freeUsageRightsOpt)    => freeMetadataOpt orElse freeUsageRightsOpt
-  }
-
-
+  val freeFilter = filterOrFilter(freeSupplierFilter, freeUsageRightsFilter)
   val nonFreeFilter = freeFilter.map(filters.not)
 
   // FIXME: There must be a better way (._.). Potentially making cost a lookup
   // again?
   lazy val freeToUseCategories: List[String] = List(
-    "PR Image",
-    "handout",
-    "screengrab",
-    "guardian-witness",
-    "social-media",
-    "obituary",
-    "staff-photographer",
-    "contract-photographer",
-    "commissioned-photographer",
-    "pool"
+    CreativeCommons.category,
+    CrownCopyright.category,
+    GuardianWitness.category,
+    Handout.category,
+    Obituary.category,
+    Pool.category,
+    PrImage.category,
+    Screengrab.category,
+    SocialMedia.category,
+    CommissionedAgency.category,
+    StaffPhotographer.category,
+    ContractPhotographer.category,
+    CommissionedPhotographer.category,
+    ContractIllustrator.category,
+    CommissionedIllustrator.category,
+    Composite.category
   )
+
+  val persistedFilter = filters.or(
+    filters.bool.must(filters.existsOrMissing("exports", true)),
+    filters.exists(NonEmptyList(identifierField(Config.persistenceIdentifier))),
+    filters.bool.must(filters.boolTerm(editsField("archived"), true)),
+    filters.bool.must(filters.term(usageRightsField("category"), StaffPhotographer.category)),
+    filters.bool.must(filters.term(usageRightsField("category"), ContractPhotographer.category)),
+    filters.bool.must(filters.term(usageRightsField("category"), CommissionedPhotographer.category)),
+    filters.bool.must(filters.term(usageRightsField("category"), ContractIllustrator.category)),
+    filters.bool.must(filters.term(usageRightsField("category"), CommissionedIllustrator.category)),
+    filters.bool.must(filters.term(usageRightsField("category"), CommissionedAgency.category))
+  )
+
+  val nonPersistedFilter = filters.not(persistedFilter)
+
+  def filterOrFilter(filter: Option[FilterBuilder], orFilter: Option[FilterBuilder]): Option[FilterBuilder] = (filter, orFilter) match {
+    case (Some(someFilter), Some(orSomeFilter)) => Some(filters.or(someFilter, orSomeFilter))
+    case (filterOpt,    orFilterOpt)    => filterOpt orElse orFilterOpt
+  }
+
+  def filterAndFilter(filter: Option[FilterBuilder], andFilter: Option[FilterBuilder]): Option[FilterBuilder] = (filter, andFilter) match {
+    case (Some(someFilter), Some(andSomeFilter)) => Some(filters.and(someFilter, andSomeFilter))
+    case (filterOpt,    andFilterOpt)    => filterOpt orElse andFilterOpt
+  }
 
 }

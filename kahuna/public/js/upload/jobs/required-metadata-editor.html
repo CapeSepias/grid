@@ -1,7 +1,7 @@
 <form class="job-editor" name="jobEditor" ng:submit="ctrl.save()" novalidate>
     <div class="job-editor__inputs">
-        <label class="job-info--editor__field">
-            <div class="job-info--editor__label">Description</div>
+        <label class="job-info--editor__field flex-center">
+            <div class="job-info--editor__label job-info--editor__label flex-center text-small">Description</div>
             <textarea
                 name="description"
                 placeholder="e.g. {{funnyDescription}}…"
@@ -17,16 +17,16 @@
 
             <button
                 class="job-editor__apply-to-all"
-                title="Apply this description to all"
+                title="Apply this description to all your current uploads"
                 type="button"
                 ng:if="ctrl.withBatch"
                 ng:click="ctrl.batchApplyMetadata('description')"
             >⇔</button>
         </label>
 
-        <label class="job-info--editor__field">
+        <label class="job-info--editor__field flex-center">
             <!-- TODO: autocomplete on byline when API responds correctly with results -->
-            <div class="job-info--editor__label">Byline</div>
+            <div class="job-info--editor__label text-small text-small">Byline</div>
             <input
                 type="text"
                 name="byline"
@@ -40,17 +40,17 @@
 
             <button
                 class="job-editor__apply-to-all"
-                title="Apply this byline to all"
+                title="Apply this byline to all your current uploads"
                 type="button"
                 ng:if="ctrl.withBatch"
                 ng:click="ctrl.batchApplyMetadata('byline')"
             >⇔</button>
 
         </label>
-        <div class="job-info--editor__field">
-            <div class="job-info--editor__label">Credit</div>
+        <div class="job-info--editor__field flex-center">
+            <div class="job-info--editor__label text-small">Credit</div>
 
-            <gr:datalist
+            <gr-datalist
                 class="job-info--editor__input"
                 gr:search="ctrl.metadataSearch('credit', q)">
 
@@ -61,7 +61,7 @@
                     ng:model="ctrl.metadata.credit"
                     ng:change="ctrl.save()"
                     ng:model-options="{ updateOn: 'gr:datalist:update blur' }" />
-            </gr:datalist>
+            </gr-datalist>
 
             <button
                 class="job-editor__apply-to-all"
@@ -71,8 +71,8 @@
                 ng:click="ctrl.batchApplyMetadata('credit')"
             >⇔</button>
         </div>
-        <label ng:if="ctrl.metadata.copyright" class="job-info--editor__field">
-            <div class="job-info--editor__label">Copyright</div>
+        <label ng:if="ctrl.copyrightWasInitiallyThere" class="job-info--editor__field flex-center">
+            <div class="job-info--editor__label text-small">Copyright</div>
             <input
                 type="text"
                 name="copyright"
@@ -86,7 +86,7 @@
 
             <button
                 class="job-editor__apply-to-all"
-                title="Apply this copyright to all"
+                title="Apply this copyright to all your current uploads"
                 type="button"
                 ng:if="ctrl.withBatch"
                 ng:click="ctrl.batchApplyMetadata('copyright')"
