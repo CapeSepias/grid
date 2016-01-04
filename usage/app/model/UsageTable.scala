@@ -1,6 +1,6 @@
 package model
 
-import com.gu.mediaservice.lib.aws.DynamoDB
+import com.gu.mediaservice.lib.aws.{DynamoDB, RxDynamo}
 import com.amazonaws.auth.AWSCredentials
 import com.amazonaws.regions.Region
 
@@ -49,7 +49,7 @@ object UsageTable extends DynamoDB(
     Config.awsCredentials,
     Config.dynamoRegion,
     Config.usageRecordTable
-  ){
+  ) with RxDynamo {
 
   val hashKeyName = "grouping"
   val rangeKeyName = "usage_id"
@@ -121,19 +121,17 @@ object UsageTable extends DynamoDB(
   def delete(mediaUsage: MediaUsage): Observable[JsObject] =
     updateFromRecord(UsageRecord.buildDeleteRecord(mediaUsage))
 
-  def updateFromRecord(record: UsageRecord): Observable[JsObject] = Observable.from(Future {
+  def updateSpec(record: UsageRecord) = new UpdateItemSpec()
+    .withPrimaryKey(
+      hashKeyName,
+      record.hashKey,
+      rangeKeyName,
+      record.rangeKey
+    )
+    .withExpressionSpec(record.toXSpec)
+    .withReturnValues(ReturnValue.ALL_NEW)
 
-     val updateSpec = new UpdateItemSpec()
-      .withPrimaryKey(
-        hashKeyName,
-        record.hashKey,
-        rangeKeyName,
-        record.rangeKey
-      )
-      .withExpressionSpec(record.toXSpec)
-      .withReturnValues(ReturnValue.ALL_NEW)
+  def updateFromRecord(record: UsageRecord): Observable[JsObject] =
+    update(updateSpec(record)).map(asJsObject)
 
-    table.updateItem(updateSpec)
-
-  }).map(asJsObject)
 }

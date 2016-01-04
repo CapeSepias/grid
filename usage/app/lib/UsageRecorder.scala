@@ -14,9 +14,14 @@ import play.api.libs.json._
 import rx.lang.scala.{Observable, Subscriber}
 import rx.lang.scala.subjects.PublishSubject
 
+import com.gu.mediaservice.lib.rx.SingleThreadedScheduler
+
 import model._
 
+
 case class ResetException() extends Exception
+
+object DbUpdateScheduler extends SingleThreadedScheduler
 
 object UsageRecorder {
   val usageSubject  = PublishSubject[UsageGroup]()
@@ -48,7 +53,15 @@ object UsageRecorder {
     val creates = (usageGroup.usages -- dbUsageGroup.usages).map(UsageTable.create)
     val updates = (usageGroup.usages & dbUsageGroup.usages).map(UsageTable.update)
 
-    Observable.from(deletes ++ updates ++ creates).flatten[JsObject]
+    val writeIntervalMillis = 500.millisecond
+    val writeIntervalObservable = Observable.interval(writeIntervalMillis)
+
+    Observable.from(deletes ++ updates ++ creates)
+      .flatten[JsObject]
+
+      .zipWith(writeIntervalObservable) { case (x, i) => {println(s"------- $i -------"); x} }
+      .observeOn(DbUpdateScheduler.scheduler)
+
       .map(recordUpdate)
       .toSeq.map(MatchedUsageUpdate(_, matchUsageGroup))
   })

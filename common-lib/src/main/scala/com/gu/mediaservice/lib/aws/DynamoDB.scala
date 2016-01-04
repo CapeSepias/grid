@@ -16,7 +16,25 @@ import scala.collection.JavaConverters._
 
 object NoItemFound extends Throwable("item not found")
 
-class DynamoDB(credentials: AWSCredentials, region: Region, tableName: String) {
+import scala.concurrent.duration._
+import rx.lang.scala.Observable
+
+trait RxDynamo {
+
+  val dynamo: AwsDynamoDB
+  val client: AmazonDynamoDBClient
+  val table: Table
+
+  val maxWriteOpsPerSecond: Int = 1
+  val writeIntervalMillis = 1000.millisecond
+  val writeIntervalObservable = Observable.interval(writeIntervalMillis)
+
+  def update(spec: UpdateItemSpec)
+    (implicit ex: ExecutionContext) = Observable.from(Future(table.updateItem(spec)))
+
+}
+
+class DynamoDB(credentials: AWSCredentials, region: Region, tableName: String) extends RxDynamo {
 
   lazy val client: AmazonDynamoDBClient =
     new AmazonDynamoDBClient(credentials) <| (_ setRegion region)
